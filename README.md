@@ -58,6 +58,10 @@ Use any text editor of your choice to modify these values sudo/root not required
 #  Features 
 
 ###  Username & Password: Users can log in using their own usernames and passwords to access the chat server.
-###  Server Password: The chat server administrator can set a password that users must enter before they can join the chat.
+###  Server Password: Can set a password that users must enter before they can join the chat. (default = "SuperSecret")
 ###  Ping sounds: When a new message comes up you will hear it thanks to the playsound library https://pypi.org/project/playsound/
+###  Server commands: /kick /msg /list /restart /stop
+
+#  TO DO
+###  Moderation role to let chosen clients moderate other clients
   
