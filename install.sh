@@ -7,6 +7,10 @@ if [ "$EUID" -eq 0 ]; then
 fi
 
 # UNTESTED FOR MOST DISTROS WILL BE TESTED WITHIN A COUPLE OF DAYS.
+  # If apt is available (Debian/Ubuntu)
+  if command -v apt &> /dev/null; then
+    sudo apt update && sudo apt install python3 python3-pip python3.12-venv
+  fi
 
 if [ -z "$(command -v python3)" ]; then
   echo "Python 3 is not installed..."
@@ -17,10 +21,7 @@ if [ -z "$(command -v python3)" ]; then
     sudo pacman -Sy python
   fi
 
-  # If apt is available (Debian/Ubuntu)
-  if command -v apt &> /dev/null; then
-    sudo apt update && sudo apt install python3 python3-pip python3.12-venv
-  fi
+
 
   # If dnf is available (Fedora)
   if command -v dnf &> /dev/null; then
