@@ -6,8 +6,8 @@ import re
 from playsound import playsound
 
 MAX_LENGHT = 150
-
-current_user = ""
+NOTIFICATION_SOUND = True
+CURRENT_USER = ""
 
 def init_colors():
     curses.start_color()
@@ -31,7 +31,8 @@ def receive_messages(client_socket, messages, lock, chat_win, scroll_pos):
                 break
             message = strip_ansi_codes(message)
             with lock:
-                play_sound_in_background('notification.wav') #Credits to AnthonyRox over on freesound
+                if NOTIFICATION_SOUND:
+                    play_sound_in_background('notification.wav')  # Credits to AnthonyRox over on freesound
                 messages.append((message, 2))
                 if scroll_pos == 0:
                     redraw_chat(chat_win, messages, scroll_pos)
