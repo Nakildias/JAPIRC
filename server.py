@@ -4,6 +4,8 @@ import json
 import hashlib
 import datetime
 import time
+import os #To handle restarting
+import sys #To handle restarting
 from colored import fg, attr
 
 # Server Configuration
@@ -36,34 +38,29 @@ user_credentials = load_credentials()
 clients = {}
 
 def handle_client(client_socket, username):
-#    client_socket.send(f"Welcome to {SERVER_NAME}!".encode())
     while True:
         try:
             message = client_socket.recv(1024).decode("utf-8")
             if not message:
                 break
-            if message.lower() == "/exit":
-                client_socket.send(color_text("Goodbye!\n", "red").encode("utf-8"))
-                break
-            elif message.lower() == "/help":
-                client_socket.send(b"Commands:\n/msg <message> - Send a message\n/exit - Leave the chat\n")
-            elif message.startswith("msg "):
-                msg_content = message[4:]
-                if len(msg_content) < 1:
-                    client_socket.send(b"Error: Message must be at least 1 character long.\n")
-                elif len(msg_content) > 150:
-                    client_socket.send(b"Error: Message cannot exceed 150 characters.\n")
-                else:
-                    formatted_msg = f"{current_time} [{color_text(username, 'cyan')}]: {msg_content}"
-                    print(formatted_msg)
-                    broadcast(formatted_msg, client_socket)
+            msg_content = message[4:]
+
+            if len(msg_content) < 1:
+                client_socket.send(b"Error: Message must be at least 1 character long.\n")
+            elif len(msg_content) > 150:
+                print(f"{username} sent a message that is too long: {len(msg_content)}")
+                client_socket.send(b"Error: Message cannot exceed 150 characters.\n")
             else:
-                client_socket.send(b"Unknown command. Type /help for commands.\n")
-        except:
+                formatted_msg = f"{current_time} [{color_text(username, 'cyan')}]: {msg_content}"
+                print(formatted_msg)
+                broadcast(formatted_msg, client_socket)
+        except Exception as e:
+            print(f"Error handling client {username}: {e}")
             break
+
     print(color_text(f"{username} disconnected.", "red"))
     client_socket.close()
-    del clients[client_socket]
+    clients.pop(client_socket, None)
     broadcast(color_text(f"{username} has left the chat.\n", "yellow"), None)
 
 def broadcast(message, sender_socket):
@@ -88,7 +85,6 @@ def handle_login(client_socket, addr):
         client_socket.settimeout(60)
         username = client_socket.recv(1024).decode("utf-8").strip()
 
-        # Check for maximum length and spaces
         if len(username) > 18:
             client_socket.send(color_text("Maximum Length Exceeded (18 Characters)\n", "red").encode("utf-8"))
             client_socket.close()
@@ -97,8 +93,6 @@ def handle_login(client_socket, addr):
             client_socket.send(color_text("No Spaces Allowed in Usernames\n", "red").encode("utf-8"))
             client_socket.close()
             return
-
-        # Check if the username is already in use
         if username in clients.values():
             client_socket.send(color_text("It seems you are already connected to this server!\n", "red").encode("utf-8"))
             client_socket.close()
@@ -130,12 +124,72 @@ def handle_login(client_socket, addr):
     client_thread = threading.Thread(target=handle_client, args=(client_socket, username))
     client_thread.start()
 
+def console_commands():
+    while True:
+        command = input()
+        if command.startswith("/kick "):
+            parts = command.split(" ", 2)
+            if len(parts) < 3:
+                print("Usage: /kick <username> <reason>")
+                continue
+            username, reason = parts[1], parts[2]
+            for client, user in list(clients.items()):
+                if user == username:
+                    client.send(color_text(f"You have been kicked: {reason}\n", "red").encode("utf-8"))
+                    client.shutdown(socket.SHUT_RDWR)  # Shutdown both reading and writing
+                    client.close()  # Now close the socket
+                    del clients[client]
+                    broadcast(color_text(f"{username} was kicked: {reason}\n", "yellow"), None)
+                    print(f"Kicked {username}: {reason}")
+                    break
+            else:
+                print("User not found.")
+        elif command.startswith("/msg "):
+            message = command[5:]
+            broadcast(color_text(f"[Server]: {message}\n", "green"), None)
+            print(f"Message sent: {message}")
+        elif command == "/list":
+            print("Connected Users:")
+            for user in clients.values():
+                print(f"- {user}")
+        elif command == "/stop":
+            print("Stopping server...")
+            for client in list(clients.keys()):
+                client.send(color_text("Server shutting down. Connection lost.\n", "red").encode("utf-8"))
+                client.shutdown(socket.SHUT_RDWR)
+                client.close()
+            server_socket.close()  # Properly close the server socket
+            os._exit(0)
+        elif command == "/restart":
+            print("Restarting server...")
+            for client in list(clients.keys()):
+                client.send(color_text("Server is restarting. Connection lost.\n", "yellow").encode("utf-8"))
+                client.shutdown(socket.SHUT_RDWR)
+                client.close()
+            server_socket.close()  # Properly close the server socket
+            os.execv(sys.executable, [sys.executable] + sys.argv)  # Start the server back up
+        elif command == "/help":
+            print("")
+            print("/list - List all connected clients")
+            print("")
+            print("/msg (message) - Send a message to all connected clients.")
+            print("")
+            print("/kick (username) (reason) - Kick a client from the server.")
+            print("")
+            print("/stop - Stop the server.")
+            print("")
+            print("/restart - Restart the server.")
+            print("")
+        else:
+            print("Unknown command.")
 
 def server():
+    global server_socket  # Make server_socket accessible globally
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((HOST, PORT))
     server_socket.listen(5)
     print(color_text(f"Server started on {HOST}:{PORT}", "green"))
+    threading.Thread(target=console_commands, daemon=True).start()
     try:
         while True:
             client_socket, addr = server_socket.accept()
