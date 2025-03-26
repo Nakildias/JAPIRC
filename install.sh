@@ -19,7 +19,7 @@ if [ -z "$(command -v python3)" ]; then
 
   # If apt is available (Debian/Ubuntu)
   if command -v apt &> /dev/null; then
-    sudo apt update && sudo apt install python3
+    sudo apt update && sudo apt install python3 python3-pip
   fi
 
   # If dnf is available (Fedora)
