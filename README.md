@@ -47,7 +47,7 @@ Inside the PyChatCLI directory, run the installation script:
 
 # 7. Configuration (Recommended)
 
-> By default, PyChatCLI runs on port 5050 and uses the password "Super Secret" for the server.
+> By default, PyChatCLI runs on port 5050 and uses the password "SuperSecret" for the server.
 
 If you’d like to change the default settings (port or password), you can edit the server.py file located at:
 
