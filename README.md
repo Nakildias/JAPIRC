@@ -31,7 +31,7 @@ Change into the newly created PyChatCLI directory:
 
 > cd PyChatCLI
 
-# 4. Install Dependencies
+# 4. Install PyChatCLI
 
 Inside the PyChatCLI directory, run the installation script:
 
