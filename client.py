@@ -6,12 +6,22 @@ import re
 from playsound import playsound
 import json
 
-
-
-
-MAX_LENGHT = 150 #Maximum Character Clients Can Send / Needs to match the server (Default: 150)
-NOTIFICATION_SOUND = True
+MAX_LENGHT = 150  # Maximum Character Clients Can Send / Needs to match the server (Default: 150)
 CURRENT_USER = ""
+SOUND_FILE = "sound_option.json"
+
+def load_sound_setting():
+    try:
+        with open(SOUND_FILE, "r") as file:
+            return json.load(file).get("notification_sound", True)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return True
+
+def save_sound_setting(value):
+    with open(SOUND_FILE, "w") as file:
+        json.dump({"notification_sound": value}, file)
+
+NOTIFICATION_SOUND = load_sound_setting()
 
 def init_colors():
     curses.start_color()
@@ -29,9 +39,10 @@ def play_sound_in_background(sound_file):
         try:
             threading.Thread(target=playsound, args=(sound_file,), daemon=True).start()
         except RuntimeError:
-            pass  # Prevents playsound warning messages
+            pass
 
 def receive_messages(client_socket, messages, lock, chat_win, scroll_pos):
+    global NOTIFICATION_SOUND
     while True:
         try:
             message = client_socket.recv(1024).decode("utf-8")
@@ -40,7 +51,7 @@ def receive_messages(client_socket, messages, lock, chat_win, scroll_pos):
             message = strip_ansi_codes(message)
             with lock:
                 if NOTIFICATION_SOUND:
-                    play_sound_in_background('notification.wav')  # Credits to AnthonyRox over on freesound
+                    play_sound_in_background('notification.wav')
                 messages.append((message, 2))
                 if scroll_pos == 0:
                     redraw_chat(chat_win, messages, scroll_pos)
@@ -68,8 +79,7 @@ def resize_windows(stdscr, chat_win, input_win, status_win):
     status_win.mvwin(max_y - 1, 0)
 
 def client(stdscr):
-    global current_user
-
+    global CURRENT_USER, NOTIFICATION_SOUND
     curses.curs_set(1)
     stdscr.clear()
     stdscr.refresh()
@@ -106,16 +116,14 @@ def client(stdscr):
     stdscr.refresh()
     username = stdscr.getstr().decode("utf-8")
     client_socket.send(username.encode("utf-8"))
-    current_user = username
+    CURRENT_USER = username
 
     stdscr.refresh()
     stdscr.addstr(4, 0, strip_ansi_codes(client_socket.recv(1024).decode("utf-8")), curses.color_pair(2))
     password = stdscr.getstr().decode("utf-8")
     client_socket.send(password.encode("utf-8"))
 
-
     curses.noecho()
-
     receive_thread = threading.Thread(target=receive_messages, args=(client_socket, messages, lock, chat_win, scroll_pos), daemon=True)
     receive_thread.start()
 
@@ -123,7 +131,7 @@ def client(stdscr):
         resize_windows(stdscr, chat_win, input_win, status_win)
 
         status_win.clear()
-        status_win.addstr(0, 0, f"Connected as : {current_user} ", curses.color_pair(4) | curses.A_BOLD)
+        status_win.addstr(0, 0, f"Connected as : {CURRENT_USER} | Sound: {'ON' if NOTIFICATION_SOUND else 'OFF'} ", curses.color_pair(4) | curses.A_BOLD)
         status_win.refresh()
 
         with lock:
@@ -137,7 +145,6 @@ def client(stdscr):
         input_win.addstr(0, 0, "> ")
         input_win.refresh()
         curses.echo()
-        input_win.keypad(False)
         message = input_win.getstr(0, 2, max_x - 3).decode("utf-8")
         curses.noecho()
 
@@ -146,23 +153,28 @@ def client(stdscr):
             break
         elif message.lower() == "/help":
             command_output = [
-                "/exit       - Leave the chat",
-                "/clear      - Clear messages that came from commands",
-                "/clearall   - Clear all messages"
+                " /exit         - Leave the chat",
+                " /clear        - Clear messages that came from commands",
+                " /clearall     - Clear all messages",
+                " /toggle_sound - Toggle notification sound on/off"
             ]
+        elif message.lower() == "/toggle_sound":
+            NOTIFICATION_SOUND = not NOTIFICATION_SOUND
+            save_sound_setting(NOTIFICATION_SOUND)
+            command_output.append(f" Notification sound {'enabled' if NOTIFICATION_SOUND else 'disabled'}.")
         elif message.lower() == "/clear":
             with lock:
-                messages[:] = [msg for msg in messages if not msg[0].startswith('/')]
+                messages[:] = [msg for msg in messages if not msg[0].startswith(' ')]
                 redraw_chat(chat_win, messages, scroll_pos)
         elif message.lower() == "/clearall":
             with lock:
                 messages.clear()
                 redraw_chat(chat_win, messages, scroll_pos)
         else:
-            if len(message.strip()) > 0 and len(message.strip()) <= MAX_LENGHT:
+            if 0 < len(message.strip()) <= MAX_LENGHT:
                 with lock:
                     current_time = datetime.datetime.now().strftime("%X")
-                    messages.append((f"{current_time} [{current_user}]: {message}", 1))
+                    messages.append((f"{current_time} [{CURRENT_USER}]: {message}", 1))
                     if scroll_pos == 0:
                         redraw_chat(chat_win, messages, scroll_pos)
                 client_socket.send(f"msg {message}".encode("utf-8"))
