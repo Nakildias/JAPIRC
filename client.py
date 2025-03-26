@@ -4,8 +4,12 @@ import curses
 import datetime
 import re
 from playsound import playsound
+import json
 
-MAX_LENGHT = 150
+
+
+
+MAX_LENGHT = 150 #Maximum Character Clients Can Send / Needs to match the server (Default: 150)
 NOTIFICATION_SOUND = True
 CURRENT_USER = ""
 
@@ -21,7 +25,11 @@ def strip_ansi_codes(text):
     return ansi_escape.sub('', text)
 
 def play_sound_in_background(sound_file):
-    threading.Thread(target=playsound, args=(sound_file,), daemon=True).start()
+    if NOTIFICATION_SOUND:
+        try:
+            threading.Thread(target=playsound, args=(sound_file,), daemon=True).start()
+        except RuntimeError:
+            pass  # Prevents playsound warning messages
 
 def receive_messages(client_socket, messages, lock, chat_win, scroll_pos):
     while True:
