@@ -12,6 +12,7 @@ from colored import fg, attr
 HOST = "0.0.0.0"
 PORT = 5050
 USER_CREDENTIALS_FILE = "user_credentials.json"
+OPS_FILE = "ops.json"  # File to store operators
 SERVER_PASSWORD = "SuperSecret"  # Change this to your desired server password
 SERVER_NAME = "Server Name"  # Change this to your desired server name
 current_time = datetime.datetime.now().strftime("%X")
@@ -31,10 +32,22 @@ def save_credentials(credentials):
     with open(USER_CREDENTIALS_FILE, "w") as f:
         json.dump(credentials, f)
 
+def load_ops():
+    try:
+        with open(OPS_FILE, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
+def save_ops(ops):
+    with open(OPS_FILE, "w") as f:
+        json.dump(ops, f)
+
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 user_credentials = load_credentials()
+ops = load_ops()
 clients = {}
 
 def handle_client(client_socket, username):
@@ -43,8 +56,20 @@ def handle_client(client_socket, username):
             message = client_socket.recv(1024).decode("utf-8")
             if not message:
                 break
-            msg_content = message[4:]
+            msg_content = message.strip()
 
+            # Command handling based on op status
+            if msg_content.startswith("/kick ") or msg_content.startswith("/stop") or msg_content.startswith("/restart"):
+                # Ensure user is an operator
+                if username not in ops:
+                    client_socket.send(color_text("You do not have permission to execute this command.\n", "red").encode("utf-8"))
+                    continue  # Skip normal message processing if it's a restricted command
+
+                # Handle the command if it's valid (forward to command handler function)
+                handle_server_command(client_socket, username, msg_content)
+                continue  # Skip the normal message handling to avoid broadcast
+
+            # If it's not a command, handle it as a normal chat message
             if len(msg_content) < 1:
                 client_socket.send(b"Error: Message must be at least 1 character long.\n")
             elif len(msg_content) > 150:
@@ -62,6 +87,45 @@ def handle_client(client_socket, username):
     client_socket.close()
     clients.pop(client_socket, None)
     broadcast(color_text(f"{username} has left the chat.\n", "yellow"), None)
+
+def handle_server_command(client_socket, username, message):
+    if message.startswith("/kick "):
+        parts = message.split(" ", 2)
+        if len(parts) < 3:
+            client_socket.send(color_text("Usage: /kick <username> <reason>\n", "red").encode("utf-8"))
+            return
+        target_user, reason = parts[1], parts[2]
+        # Implement the kicking logic here
+        for client, user in list(clients.items()):
+            if user == target_user:
+                client.send(color_text(f"You have been kicked: {reason}\n", "red").encode("utf-8"))
+                client.shutdown(socket.SHUT_RDWR)  # Shutdown both reading and writing
+                client.close()  # Now close the socket
+                del clients[client]
+                broadcast(color_text(f"{target_user} was kicked: {reason}\n", "yellow"), None)
+                print(f"Kicked {target_user}: {reason}")
+                return
+        client_socket.send(color_text("User not found.\n", "red").encode("utf-8"))
+
+    elif message == "/stop":
+        # Implement the server stop logic here
+        print("Stopping server...")
+        for client in list(clients.keys()):
+            client.send(color_text("Server shutting down. Connection lost.\n", "red").encode("utf-8"))
+            client.shutdown(socket.SHUT_RDWR)
+            client.close()
+        server_socket.close()  # Properly close the server socket
+        os._exit(0)
+
+    elif message == "/restart":
+        # Implement the server restart logic here
+        print("Restarting server...")
+        for client in list(clients.keys()):
+            client.send(color_text("Server is restarting. Connection lost.\n", "yellow").encode("utf-8"))
+            client.shutdown(socket.SHUT_RDWR)
+            client.close()
+        server_socket.close()  # Properly close the server socket
+        os.execv(sys.executable, [sys.executable] + sys.argv)  # Start the server back up
 
 def broadcast(message, sender_socket):
     for client in list(clients.keys()):
@@ -168,6 +232,33 @@ def console_commands():
                 client.close()
             server_socket.close()  # Properly close the server socket
             os.execv(sys.executable, [sys.executable] + sys.argv)  # Start the server back up
+        elif command.startswith("/op "):
+            parts = command.split(" ", 1)  # Split only into two parts: command and username
+            if len(parts) < 2 or not parts[1].strip():
+                print("Usage: /op <username>")
+                continue
+            username = parts[1].strip()
+            if username not in user_credentials:
+                print(f"User {username} does not exist.")
+                continue
+            if username in ops:
+                print(f"{username} is already an operator.")
+            else:
+                ops.append(username)
+                save_ops(ops)
+                print(f"{username} is now an operator.")
+        elif command.startswith("/deop "):
+            parts = command.split(" ", 1)  # Split only into two parts: command and username
+            if len(parts) < 2 or not parts[1].strip():
+                print("Usage: /deop <username>")
+                continue
+            username = parts[1].strip()
+            if username not in ops:
+                print(f"{username} is not an operator.")
+            else:
+                ops.remove(username)
+                save_ops(ops)
+                print(f"{username} is no longer an operator.")
         elif command == "/help":
             print("")
             print("/list - List all connected clients")
@@ -179,6 +270,10 @@ def console_commands():
             print("/stop - Stop the server.")
             print("")
             print("/restart - Restart the server.")
+            print("")
+            print("/op <username> - Make a user an operator.")
+            print("")
+            print("/deop <username> - Remove a user from the operator list.")
             print("")
         else:
             print("Unknown command.")
