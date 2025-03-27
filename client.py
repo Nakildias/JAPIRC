@@ -5,6 +5,9 @@ import datetime
 import re
 from playsound import playsound
 import json
+import time
+import signal
+import sys
 
 MAX_LENGHT = 150  # Maximum Character Clients Can Send / Needs to match the server (Default: 150)
 CURRENT_USER = ""
@@ -61,12 +64,19 @@ def receive_messages(client_socket, messages, lock, chat_win, scroll_pos):
             break
 
 def redraw_chat(chat_win, messages, scroll_pos):
-    chat_win.clear()
+    chat_win.clear()  # **Force clear screen to prevent corruption**
+    chat_win.refresh()  # **Ensure full reset before drawing**
+
     max_y, _ = chat_win.getmaxyx()
     start = max(0, len(messages) - max_y + scroll_pos)
     end = start + max_y
+
     for i, (msg, color) in enumerate(messages[start:end]):
-        chat_win.addstr(i, 0, msg, curses.color_pair(color))
+        try:
+            chat_win.addstr(i, 0, msg[:MAX_LENGHT], curses.color_pair(color))
+        except curses.error:
+            pass  # Ignore screen size errors
+
     chat_win.refresh()
 
 def resize_windows(stdscr, chat_win, input_win, status_win):
@@ -77,6 +87,11 @@ def resize_windows(stdscr, chat_win, input_win, status_win):
     chat_win.mvwin(0, 0)
     input_win.mvwin(max_y - 2, 0)
     status_win.mvwin(max_y - 1, 0)
+
+def graceful_exit(signal, frame, client_socket):
+    print("Closing connection gracefully...")
+    client_socket.close()
+    sys.exit(0)
 
 def client(stdscr):
     global CURRENT_USER, NOTIFICATION_SOUND
@@ -108,17 +123,20 @@ def client(stdscr):
     client_socket.connect((server_ip, server_port))
 
     stdscr.addstr(2, 0, strip_ansi_codes(client_socket.recv(1024).decode("utf-8")), curses.color_pair(2))
+    curses.noecho()
     stdscr.refresh()
     server_password = stdscr.getstr().decode("utf-8")
     client_socket.send(server_password.encode("utf-8"))
 
     stdscr.addstr(3, 0, strip_ansi_codes(client_socket.recv(1024).decode("utf-8")), curses.color_pair(2))
+    curses.echo()
     stdscr.refresh()
     username = stdscr.getstr().decode("utf-8")
     client_socket.send(username.encode("utf-8"))
     CURRENT_USER = username
 
     stdscr.refresh()
+    curses.noecho()
     stdscr.addstr(4, 0, strip_ansi_codes(client_socket.recv(1024).decode("utf-8")), curses.color_pair(2))
     password = stdscr.getstr().decode("utf-8")
     client_socket.send(password.encode("utf-8"))
@@ -127,11 +145,14 @@ def client(stdscr):
     receive_thread = threading.Thread(target=receive_messages, args=(client_socket, messages, lock, chat_win, scroll_pos), daemon=True)
     receive_thread.start()
 
+    # Setup graceful exit on Ctrl+C
+    signal.signal(signal.SIGINT, lambda s, f: graceful_exit(s, f, client_socket))
+
     while True:
         resize_windows(stdscr, chat_win, input_win, status_win)
 
         status_win.clear()
-        status_win.addstr(0, 0, f"Connected as : {CURRENT_USER} | Sound: {'ON' if NOTIFICATION_SOUND else 'OFF'} ", curses.color_pair(4) | curses.A_BOLD)
+        status_win.addstr(0, 0, f"Connected as: {CURRENT_USER} | Sound: {'ON' if NOTIFICATION_SOUND else 'OFF'} ", curses.color_pair(4) | curses.A_BOLD)
         status_win.refresh()
 
         with lock:
@@ -139,19 +160,25 @@ def client(stdscr):
                 for line in command_output:
                     messages.append((line, 4))
                 command_output.clear()
-            redraw_chat(chat_win, messages, scroll_pos)
+
+            redraw_chat(chat_win, messages, scroll_pos)  # Ensure proper redraw before input
 
         input_win.clear()
-        input_win.addstr(0, 0, "> ")
+        input_win.addstr(0, 0, "❯ ")
         input_win.refresh()
         curses.echo()
-        message = input_win.getstr(0, 2, max_x - 3).decode("utf-8")
+        message = input_win.getstr(0, 2, max_x - 3).decode("utf-8").strip()
         curses.noecho()
+
+        if not message:
+            continue  # Ignore empty messages
 
         if message.lower() == "/exit":
             client_socket.send(message.encode("utf-8"))
             break
         elif message.lower() == "/help":
+            messages[:] = [msg for msg in messages if not msg[0].startswith(' ')]
+            redraw_chat(chat_win, messages, scroll_pos)
             command_output = [
                 " /exit         - Leave the chat",
                 " /clear        - Clear messages that came from commands",
@@ -159,6 +186,8 @@ def client(stdscr):
                 " /toggle_sound - Toggle notification sound on/off"
             ]
         elif message.lower() == "/toggle_sound":
+            messages[:] = [msg for msg in messages if not msg[0].startswith(' ')]
+            redraw_chat(chat_win, messages, scroll_pos)
             NOTIFICATION_SOUND = not NOTIFICATION_SOUND
             save_sound_setting(NOTIFICATION_SOUND)
             command_output.append(f" Notification sound {'enabled' if NOTIFICATION_SOUND else 'disabled'}.")
@@ -171,13 +200,24 @@ def client(stdscr):
                 messages.clear()
                 redraw_chat(chat_win, messages, scroll_pos)
         else:
-            if 0 < len(message.strip()) <= MAX_LENGHT:
-                with lock:
-                    current_time = datetime.datetime.now().strftime("%X")
-                    messages.append((f"{current_time} [{CURRENT_USER}]: {message}", 1))
-                    if scroll_pos == 0:
-                        redraw_chat(chat_win, messages, scroll_pos)
+            # Only append if the message doesn't start with '/'
+            if not message.startswith("/"):
+                if 0 < len(message.strip()) <= MAX_LENGHT:
+                    with lock:
+                        current_time = datetime.datetime.now().strftime("%X")
+                        messages.append((f"{current_time} [{CURRENT_USER}]: {message}", 1))
+                        if scroll_pos == 0:
+                            redraw_chat(chat_win, messages, scroll_pos)
                 client_socket.send(f"{message}".encode("utf-8"))
+
+            # Send the message, even if it starts with "/"
+            if message.startswith("/"):
+                messages[:] = [msg for msg in messages if not msg[0].startswith(' ')]
+                redraw_chat(chat_win, messages, scroll_pos)
+                client_socket.send(f"{message}".encode("utf-8"))
+
+        # Sleep to control the refresh rate
+        time.sleep(0.1)
 
     client_socket.close()
 
