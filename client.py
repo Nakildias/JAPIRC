@@ -177,7 +177,7 @@ def client(stdscr):
                     messages.append((f"{current_time} [{CURRENT_USER}]: {message}", 1))
                     if scroll_pos == 0:
                         redraw_chat(chat_win, messages, scroll_pos)
-                client_socket.send(f"msg {message}".encode("utf-8"))
+                client_socket.send(f"{message}".encode("utf-8"))
 
     client_socket.close()
 
