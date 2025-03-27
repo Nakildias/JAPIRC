@@ -63,5 +63,5 @@ Use any text editor of your choice to modify these values sudo/root not required
 ###  Server commands: /kick /msg /list /restart /stop
 
 #  TO DO
-###  Moderation role to let chosen clients moderate other clients
+###  Moderation role to let chosen clients moderate other clients (Currently working on that) Around 30% of the way there.
   
