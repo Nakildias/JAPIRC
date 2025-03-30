@@ -1,8 +1,20 @@
 # Just Another Python Internet Relay Chat
+## Key features
+> Chat with friends
+#
+> Share files with friends
+#
+> Operator role
+#
+> Secured by server password
+#
+> GUI & TUI Client
+#
+> More to come...
 
 # Installation Guide
 
-### Follow the steps below to install and set up JAPIRC on your linux system.
+> Follow the steps below to install and set up JAPIRC on your linux system.
 # 1. Install Git
 
 Debian Based:
