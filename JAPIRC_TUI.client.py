@@ -11,6 +11,8 @@ import sys
 
 MAX_LENGHT = 150  # Maximum Character Clients Can Send / Needs to match the server (Default: 150)
 CURRENT_USER = ""
+
+# Setting files
 SOUND_FILE = "sound_option.json"
 
 def load_sound_setting():
@@ -95,6 +97,7 @@ def graceful_exit(signal, frame, client_socket):
 
 def client(stdscr):
     global CURRENT_USER, NOTIFICATION_SOUND
+    curses.use_default_colors()
     curses.curs_set(1)
     stdscr.clear()
     stdscr.refresh()
@@ -180,9 +183,10 @@ def client(stdscr):
             messages[:] = [msg for msg in messages if not msg[0].startswith(' ')]
             redraw_chat(chat_win, messages, scroll_pos)
             command_output = [
-                " /exit         - Leave the chat",
-                " /clear        - Clear messages that came from commands",
-                " /clearall     - Clear all messages",
+                " /help - Shows this help message.",
+                " /exit - Closes the client.",
+                " /clear - Clear messages that came from commands",
+                " /clearall - Clear all messages",
                 " /toggle_sound - Toggle notification sound on/off"
             ]
         elif message.lower() == "/toggle_sound":
