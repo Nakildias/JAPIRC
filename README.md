@@ -1,6 +1,8 @@
+# Just Another Python Internet Relay Chat
+
 # Installation Guide
 
-### Follow the steps below to install and set up PyChatCLI on your linux system.
+### Follow the steps below to install and set up JAPIRC on your linux system.
 # 1. Install Git
 
 Debian Based:
@@ -21,19 +23,19 @@ Gentoo Based:
 
 # 2. Clone the Repository
 
-Once Git is installed, clone the PyChatCLI repository by running the following command:
+Once Git is installed, clone the JAPIRC repository by running the following command:
 
-> git clone https://github.com/Nakildias/PyChatCLI
+> git clone https://github.com/Nakildias/JAPIRC
 
 # 3. Navigate to the Project Directory
 
-Change into the newly created PyChatCLI directory:
+Change into the newly created JAPIRC directory:
 
-> cd PyChatCLI
+> cd JAPIRC
 
-# 4. Install PyChatCLI
+# 4. Install JAPIRC
 
-Inside the PyChatCLI directory, run the installation script:
+Inside the JAPIRC directory, run the installation script:
 
 > bash ./install.sh
 
@@ -41,17 +43,19 @@ Inside the PyChatCLI directory, run the installation script:
 
 > The script will prompt you for your sudo password. Enter it to proceed with the installation.
 
-# 6. Run PyChatCLI
+# 6. Run JAPIRC with either of those 3 commands:
 
-> PyChatCLI
+> JAPIRC
+> japirc
+> japi
 
 # 7. Configuration (Recommended)
 
-> By default, PyChatCLI runs on port 5050 and uses the password "SuperSecret" for the server.
+> By default, JAPIRC runs on port 5050 and uses the password "SuperSecret" for the server.
 
-If you’d like to change the default settings (port or password), you can edit the server.py file located at:
+If you’d like to change the default settings (port or password), you can edit the "JAPIRC_CLI.server.py" file located at:
 
-> ~/.python3/PyChatCLI/server.py
+> ~/.python3/JAPIRC_CLI.server.py/server.py
 
 Use any text editor of your choice to modify these values sudo/root not required.
 
