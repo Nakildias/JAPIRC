@@ -5,6 +5,7 @@ import datetime
 import re
 from playsound import playsound
 import json
+import os
 import time
 import signal
 import sys
@@ -13,6 +14,7 @@ MAX_LENGHT = 150  # Maximum Character Clients Can Send / Needs to match the serv
 CURRENT_USER = ""
 
 # Setting files
+DOWNLOAD_DIR = os.path.expanduser("~/Downloads")
 SOUND_FILE = "sound_option.json"
 
 def load_sound_setting():
@@ -53,7 +55,29 @@ def receive_messages(client_socket, messages, lock, chat_win, scroll_pos):
             message = client_socket.recv(1024).decode("utf-8")
             if not message:
                 break
+
             message = strip_ansi_codes(message)
+
+            # Check for file transfer header
+            if message.startswith("FILE_TRANSFER:"):
+                _, filename, file_size = message.strip().split(":")
+                file_size = int(file_size)
+
+                messages.append(("Starting Download.", 4))
+
+                save_path = os.path.join(DOWNLOAD_DIR, filename)
+                with open(save_path, "wb") as file:
+                    bytes_received = 0
+                    while bytes_received < file_size:
+                        chunk = client_socket.recv(1024)
+                        if not chunk:
+                            break
+                        file.write(chunk)
+                        bytes_received += len(chunk)
+
+                messages.append(("File Downloaded.", 4))
+                continue  # Skip normal message handling
+
             with lock:
                 if NOTIFICATION_SOUND:
                     play_sound_in_background('notification.wav')
@@ -187,7 +211,10 @@ def client(stdscr):
                 " /exit - Closes the client.",
                 " /clear - Clear messages that came from commands",
                 " /clearall - Clear all messages",
-                " /toggle_sound - Toggle notification sound on/off"
+                " /toggle_sound - Toggle notification sound on/off",
+                " /files - Shows all available files from the server",
+                " /download (filename) - Download a file from the server",
+                " /upload (directory to file) - Upload a file to the server"
             ]
         elif message.lower() == "/toggle_sound":
             messages[:] = [msg for msg in messages if not msg[0].startswith(' ')]
