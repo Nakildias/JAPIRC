@@ -10,6 +10,7 @@ import json
 import playsound
 
 # Setting files
+DOWNLOAD_DIR = os.path.expanduser("~/Downloads")
 SOUND_FILE = "sound_option.json"
 def load_sound_setting():
     try:
@@ -128,14 +129,38 @@ def receive_messages():
     global client_socket
     while True:
         try:
-            message = client_socket.recv(1024).decode("utf-8")
+            message = client_socket.recv(1024).decode("utf-8", errors="ignore")
             if not message:
                 handle_disconnection()
                 break
+
+            # Check for file transfer header
+            if message.startswith("FILE_TRANSFER:"):
+                _, filename, file_size = message.strip().split(":")
+                file_size = int(file_size)
+
+                display_message(f"Download started: {filename} {file_size} bytes...\n", "incoming")
+
+                save_path = os.path.join(DOWNLOAD_DIR, filename)
+                with open(save_path, "wb") as file:
+                    bytes_received = 0
+                    while bytes_received < file_size:
+                        chunk = client_socket.recv(1024)
+                        if not chunk:
+                            break
+                        file.write(chunk)
+                        bytes_received += len(chunk)
+
+                display_message(f"File downloaded: {save_path}\n", "incoming")
+                continue  # Skip normal message handling
+
+            # Handle normal chat messages
             cleaned_message = process_ansi_colors(message)
             display_message(f"{cleaned_message}\n", "incoming")
-            if NOTIFICATION_SOUND:  # Check if sound notifications are enabled
-                play_notification_sound()  # Play sound in a separate thread
+
+            if NOTIFICATION_SOUND:
+                play_notification_sound()
+
         except (ConnectionResetError, BrokenPipeError):
             handle_disconnection()
             break
@@ -174,9 +199,12 @@ def process_ansi_colors(message):
 
 def show_help():
     help_message = (
-        " /help - Shows this help message.\n"
-        " /exit - Closes the client.\n"
-        " /toggle_sound - Toggle notification sound on/off.\n"
+        " /help - Shows this help message\n"
+        " /exit - Closes the client\n"
+        " /toggle_sound - Toggle notification sound on/off\n"
+        " /files - Shows all available files from the server\n"
+        " /download (filename) - Download a file from the server\n"
+        " /upload (directory to file) - Upload a file to the server\n"
     )
     display_message(help_message, "client_command_output")
 
