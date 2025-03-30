@@ -62,7 +62,7 @@ def handle_client(client_socket, username):
             if msg_content.startswith("/kick ") or msg_content.startswith("/stop") or msg_content.startswith("/restart") or msg_content.startswith("/list" ):
                 # Ensure user is an operator
                 if username not in ops:
-                    client_socket.send(color_text("You do not have permission to execute this command.\n", "red").encode("utf-8"))
+                    client_socket.send(color_text("You do not have permission to execute this command.", "red").encode("utf-8"))
                     continue  # Skip normal message processing if it's a restricted command
 
                 # Handle the command if it's valid (forward to command handler function)
@@ -88,26 +88,26 @@ def handle_client(client_socket, username):
     print(color_text(f"{username} disconnected.", "red"))
     client_socket.close()
     clients.pop(client_socket, None)
-    broadcast(color_text(f"{current_time} {username} has left the chat.\n", "yellow"), None)
+    broadcast(color_text(f"{current_time} {username} has left the chat.", "yellow"), None)
 
 def handle_server_command(client_socket, username, message):
     if message.startswith("/kick "):
         parts = message.split(" ", 2)
         if len(parts) < 3:
-            client_socket.send(color_text("Usage: /kick <username> <reason>\n", "red").encode("utf-8"))
+            client_socket.send(color_text("Usage: /kick <username> <reason>", "red").encode("utf-8"))
             return
         target_user, reason = parts[1], parts[2]
         # Implement the kicking logic here
         for client, user in list(clients.items()):
             if user == target_user:
-                client.send(color_text(f"{current_time} You have been kicked: {reason}\n", "red").encode("utf-8"))
+                client.send(color_text(f"{current_time} You have been kicked: {reason}", "red").encode("utf-8"))
                 client.shutdown(socket.SHUT_RDWR)  # Shutdown both reading and writing
                 client.close()  # Now close the socket
                 del clients[client]
-                broadcast(color_text(f"{current_time} {target_user} was kicked: {reason}\n", "yellow"), None)
+                broadcast(color_text(f"{current_time} {target_user} was kicked: {reason}", "yellow"), None)
                 print(color_text(f"{current_time} Kicked {target_user}: {reason}", "red"))
                 return
-        client_socket.send(color_text("User not found.\n", "red").encode("utf-8"))
+        client_socket.send(color_text("User not found.", "red").encode("utf-8"))
 
     elif message == "/stop":
         # Implement the server stop logic here
@@ -192,7 +192,7 @@ def handle_login(client_socket, addr):
 
     clients[client_socket] = username
     print(color_text(f"{current_time} {username} joined from {addr}", "cyan"))
-    broadcast(color_text(f"{current_time} {username} has joined the chat!\n", "green"), None)
+    broadcast(color_text(f"{current_time} {username} has joined the chat!", "green"), None)
 
     client_thread = threading.Thread(target=handle_client, args=(client_socket, username))
     client_thread.start()
@@ -208,18 +208,18 @@ def console_commands():
             username, reason = parts[1], parts[2]
             for client, user in list(clients.items()):
                 if user == username:
-                    client.send(color_text(f"{current_time} You have been kicked: {reason}\n", "red").encode("utf-8"))
+                    client.send(color_text(f"{current_time} You have been kicked: {reason}", "red").encode("utf-8"))
                     client.shutdown(socket.SHUT_RDWR)  # Shutdown both reading and writing
                     client.close()  # Now close the socket
                     del clients[client]
-                    broadcast(color_text(f"{current_time} {username} was kicked: {reason}\n", "yellow"), None)
+                    broadcast(color_text(f"{current_time} {username} was kicked: {reason}", "yellow"), None)
                     print(f"{current_time} Kicked {username}: {reason}")
                     break
             else:
                 print(color_text("User not found or not online", "red"))
         elif command.startswith("/msg "):
             message = command[5:]
-            broadcast(color_text(f"{current_time} [Server]: {message}\n", "green"), None)
+            broadcast(color_text(f"{current_time} [Server]: {message}", "green"), None)
             print(f"{current_time} [Server]: {message}")
         elif command == "/list":
             print("Connected Users:")
@@ -234,7 +234,7 @@ def console_commands():
             server_socket.close()  # Properly close the server socket
             os._exit(0)
         elif command == "/restart":
-            print(color_text(f"{current_time}Restarting server...", "red"))
+            print(color_text(f"{current_time} Restarting server...", "red"))
             for client in list(clients.keys()):
                 client.send(color_text(f"{current_time}Connection lost. Reason: (Server is restarting...)\n", "red").encode("utf-8"))
                 client.shutdown(socket.SHUT_RDWR)
