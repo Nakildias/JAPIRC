@@ -37,27 +37,31 @@ else
 fi
 
 # Check if the directory for the Python virtual environment exists
-if [ ! -d "~/.python3/PyChatCLI" ]; then
-  echo "Making a directory for python3 location = venv ~/.python3/PyChatCLI"
-  mkdir -p ~/.python3/PyChatCLI
-  python3 -m venv ~/.python3/PyChatCLI
-  cp ./notification.wav ~/.python3/PyChatCLI/
-  cp ./client.py ~/.python3/PyChatCLI/
-  cp ./server.py ~/.python3/PyChatCLI/
-  sudo cp ./PyChatCLI /bin/
-  sudo chmod +x /bin/PyChatCLI
-  source ~/.python3/PyChatCLI/bin/activate
-  cd ~/.python3/PyChatCLI/bin/
+if [ ! -d "~/.python3/JAPIRC" ]; then
+  echo "Making a directory for python3 location = venv ~/.python3/JAPIRC"
+  mkdir -p ~/.python3/JAPIRC
+  python3 -m venv ~/.python3/JAPIRC
+  cp ./notification.wav ~/.python3/JAPIRC/
+  cp ./JAPIRC_TUI.client.py ~/.python3/JAPIRC/
+  cp ./JAPIRC_GUI.client.py ~/.python3/JAPIRC/
+  cp ./JAPIRC_CLI.server.py ~/.python3/JAPIRC/
+  sudo cp ./JAPIRC /bin/
+  sudo cp /bin/JAPIRC /bin/japirc
+  sudo cp ./JAPIRC /bin/japi
+  sudo chmod +x /bin/JAPIRC
+  source ~/.python3/JAPIRC/bin/activate
+  cd ~/.python3/JAPIRC/bin/
   python3 -m pip install --upgrade pip
   python3 -m pip install --upgrade setuptools wheel
   python3 -m pip install playsound
   python3 -m pip install colored
+  python3 -m pip install customtkinter
 fi
 
-# Check if PyChatCLI command is available
-if command -v PyChatCLI &> /dev/null; then
+# Check if JAPIRC command is available
+if command -v JAPIRC &> /dev/null; then
   echo "Installation was successful!"
-  echo "You may now use the command 'PyChatCLI'."
+  echo "You may now use the command '"JAPIRC", "japirc" or "japi"'."
 else
   echo "Installation was unsuccessful..."
 fi
