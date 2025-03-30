@@ -4,8 +4,8 @@ import json
 import hashlib
 import datetime
 import time
-import os #To handle restarting
-import sys #To handle restarting
+import os
+import sys
 from colored import fg, attr
 
 # Server Configuration
@@ -16,6 +16,56 @@ OPS_FILE = "ops.json"  # File to store operators
 SERVER_PASSWORD = "SuperSecret"  # Change this to your desired server password
 SERVER_NAME = "Server Name"  # Change this to your desired server name
 current_time = datetime.datetime.now().strftime("%X")
+FILE_DIRECTORY = "user_uploaded_files"  # Directory where uploaded files will be stored
+
+# Make sure the file directory exists
+if not os.path.exists(FILE_DIRECTORY):
+    os.makedirs(FILE_DIRECTORY)
+
+def handle_upload(client_socket, filepath, username):
+    try:
+        filename = os.path.basename(filepath)
+        dest_path = os.path.join(FILE_DIRECTORY, filename)
+
+        with open(filepath, "rb") as src_file, open(dest_path, "wb") as dest_file:
+            while (data := src_file.read(1024)):
+                dest_file.write(data)
+
+        client_socket.send(f"{current_time} {username} just uploaded '{filename}' to the server.".encode("utf-8"))
+        print(color_text(f"{current_time} {username} '{filename}' was received successfully.", "green"))
+    except Exception as e:
+        client_socket.send(f"Error uploading file: {str(e)}".encode("utf-8"))
+
+def handle_download(client_socket, filename, username):
+    try:
+        filepath = os.path.join(FILE_DIRECTORY, filename)
+        if not os.path.exists(filepath):
+            client_socket.send(f"Error: File '{filename}' not found.".encode("utf-8"))
+            return
+
+        client_socket.send(f"FILE_TRANSFER:{filename}:{os.path.getsize(filepath)}".encode("utf-8"))
+        print(color_text(f"Sending '{filename}' to {username}.", "yellow"))
+
+        with open(filepath, "rb") as file:
+            while (data := file.read(1024)):
+                client_socket.send(data)
+
+#        client_socket.send(b"\nFILE_TRANSFER_COMPLETE\n") Handled on client side
+        print(color_text(f"File '{filename}' was sent successfully to {username}.", "green"))
+    except Exception as e:
+        client_socket.send(f"Error downloading file: {str(e)}".encode("utf-8"))
+
+def handle_list_files(client_socket):
+    try:
+        files = os.listdir(FILE_DIRECTORY)  # Get list of files in the directory
+        if not files:
+            client_socket.send(b"No files have been uploaded yet.")
+        else:
+            file_list = "\n".join(files)  # Convert list to string with newlines
+            client_socket.send(f" {files}".encode("utf-8"))
+    except Exception as e:
+        client_socket.send(f"Error retrieving file list: {str(e)}".encode("utf-8"))
+
 
 def color_text(text, color):
     return f"{fg(color)}{text}{attr('reset')}"
@@ -58,8 +108,18 @@ def handle_client(client_socket, username):
                 break
             msg_content = message.strip()
 
+            # Command handling for file sharing
+            if msg_content.startswith("/upload "):
+                filename = msg_content.split(" ", 1)[1]
+                handle_upload(client_socket, filename, username)
+            elif msg_content.startswith("/download "):
+                filename = msg_content.split(" ", 1)[1]
+                handle_download(client_socket, filename, username)
+            elif msg_content == "/files":
+                handle_list_files(client_socket)
+
             # Command handling based on op status
-            if msg_content.startswith("/kick ") or msg_content.startswith("/stop") or msg_content.startswith("/restart") or msg_content.startswith("/list" ):
+            elif msg_content.startswith("/kick ") or msg_content.startswith("/stop") or msg_content.startswith("/restart") or msg_content.startswith("/list" ):
                 # Ensure user is an operator
                 if username not in ops:
                     client_socket.send(color_text("You do not have permission to execute this command.", "red").encode("utf-8"))
@@ -131,10 +191,11 @@ def handle_server_command(client_socket, username, message):
 
     elif message == "/list":
         # Implement the server list logic here
-            client_socket.send(color_text(f" Connected Users:", "red").encode("utf-8"))
+            print(color_text(f"{current_time} {username} issued /list", "yellow"))
+#            client_socket.send(color_text(f" Connected Users:", "red").encode("utf-8"))
             for user in clients.values():
                 client_socket.send(color_text(f" [{user}] ", "red").encode("utf-8"))
-            client_socket.send(b"\n")  # Add a newline after the list is sent
+#            client_socket.send(b"\n")  # Add a newline after the list is sent
 
 def broadcast(message, sender_socket):
     for client in list(clients.keys()):
@@ -236,7 +297,7 @@ def console_commands():
         elif command == "/restart":
             print(color_text(f"{current_time} Restarting server...", "red"))
             for client in list(clients.keys()):
-                client.send(color_text(f"{current_time}Connection lost. Reason: (Server is restarting...)\n", "red").encode("utf-8"))
+                client.send(color_text(f"{current_time} Connection lost. Reason: (Server is restarting...)\n", "red").encode("utf-8"))
                 client.shutdown(socket.SHUT_RDWR)
                 client.close()
             server_socket.close()  # Properly close the server socket
@@ -286,6 +347,7 @@ def console_commands():
             print("")
         else:
             print("Unknown command.")
+
 
 def server():
     global server_socket  # Make server_socket accessible globally
