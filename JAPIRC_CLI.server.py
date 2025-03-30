@@ -134,6 +134,7 @@ def handle_server_command(client_socket, username, message):
             client_socket.send(color_text(f" Connected Users:", "red").encode("utf-8"))
             for user in clients.values():
                 client_socket.send(color_text(f" [{user}] ", "red").encode("utf-8"))
+            client_socket.send(b"\n")  # Add a newline after the list is sent
 
 def broadcast(message, sender_socket):
     for client in list(clients.keys()):
