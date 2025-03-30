@@ -49,6 +49,8 @@ if [ ! -d "~/.python3/JAPIRC" ]; then
   sudo cp /bin/JAPIRC /bin/japirc
   sudo cp ./JAPIRC /bin/japi
   sudo chmod +x /bin/JAPIRC
+  sudo chmod +x /bin/japi
+  sudo chmod +x /bin/japirc
   source ~/.python3/JAPIRC/bin/activate
   cd ~/.python3/JAPIRC/bin/
   python3 -m pip install --upgrade pip
