@@ -84,7 +84,7 @@ def open_chat_window():
     global chat_window, message_box, message_entry, send_button
 
     chat_window = ctk.CTkToplevel(root)
-    chat_window.title("PyChatGUI")
+    chat_window.title("JAPIRC GUI Client")
     chat_window.geometry("500x400")
 
     message_box = ctk.CTkTextbox(chat_window, height=250, width=480, state=ctk.DISABLED, wrap="word")
@@ -189,7 +189,7 @@ def toggle_sound():
 
 # Create login GUI
 root = ctk.CTk()
-root.title("PyChatGUI Login")
+root.title("JAPIRC GUI Login")
 root.geometry("350x400")
 
 ctk.CTkLabel(root, text="Server IP").pack(pady=5)
