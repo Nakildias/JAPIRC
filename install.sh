@@ -9,7 +9,7 @@ fi
 # UNTESTED FOR MOST DISTROS WILL BE TESTED WITHIN A COUPLE OF DAYS.
   # If apt is available (Debian/Ubuntu)
   if command -v apt &> /dev/null; then
-    sudo apt update && sudo apt install python3 python3-pip python3.12-venv
+    sudo apt update && sudo apt install python3 python3-pip python3.12-venv tk
   fi
 
 if [ -z "$(command -v python3)" ]; then
@@ -18,19 +18,19 @@ if [ -z "$(command -v python3)" ]; then
 
   # If pacman is available (Arch/Manjaro)
   if command -v pacman &> /dev/null; then
-    sudo pacman -Sy python
+    sudo pacman -Sy python tk
   fi
 
 
 
   # If dnf is available (Fedora)
   if command -v dnf &> /dev/null; then
-    sudo dnf install python3
+    sudo dnf install python3 tk
   fi
 
   # If emerge is available (Gentoo)
   if command -v emerge &> /dev/null; then
-    sudo emerge --sync && sudo emerge --ask dev-lang/python
+    sudo emerge --sync && sudo emerge --ask dev-lang/python dev-lang/tk
   fi
 else
   echo "Python 3 is installed, skipping installation."
