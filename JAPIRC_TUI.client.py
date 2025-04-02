@@ -692,10 +692,10 @@ def get_string_input(stdscr, prompt_y, prompt_text, is_password=False):
 
     return input_str
 
-# --- MODIFIED attempt_connection (to handle auto_reconnect logic clearly) ---
+# --- MODIFIED attempt_connection ---
 def attempt_connection(stdscr, ip, port, server_pw_saved, username_saved, user_pw_saved, auto_reconnect=False):
     """
-    Attempts to connect to the server and authenticate.
+    Attempts to connect to the server and authenticate or register.
     Handles prompting for credentials if not provided or if saved ones fail,
     *unless* auto_reconnect is True, in which case it uses saved credentials only.
     Returns the connected socket on success, None on failure.
@@ -708,49 +708,41 @@ def attempt_connection(stdscr, ip, port, server_pw_saved, username_saved, user_p
     temp_server_pw = server_pw_saved
     temp_username = username_saved
     temp_user_pw = user_pw_saved # This might be None
+    password_used_for_auth = "" # Holds the password actually sent and accepted
 
     try:
         # --- Check for required data during auto-reconnect ---
         if auto_reconnect:
             # All details MUST be present in the saved session for auto-reconnect
             if not ip or not isinstance(port, int) or not (1 <= port <= 65535) or not temp_server_pw or not temp_username or temp_user_pw is None:
-                # Add message only if NOT auto-reconnecting (avoid clutter during failed attempts)
-                # Error during auto-reconnect is handled by the caller based on return None
-                if not auto_reconnect:
-                     add_message("Cannot connect: Incomplete session data.", 3, play_sound=False)
-                     needs_redraw.set()
+                add_message("Cannot auto-reconnect: Incomplete session data.", 3, play_sound=False)
+                needs_redraw.set()
                 return None # Fail immediately without prompting
 
         # --- Connect ---
-        # Add connecting message only for initial connect or MANUAL reconnect attempt
-        if not auto_reconnect:
-            add_message(f"Connecting to {ip}:{port}...", 6, play_sound=False)
-            needs_redraw.set()
-            if stdscr:
-                try: stdscr.refresh()
-                except: pass
-            time.sleep(0.1) # Small delay to let message appear
+        add_message(f"Connecting to {ip}:{port}...", 6, play_sound=False)
+        needs_redraw.set()
+        if stdscr:
+            try: stdscr.refresh()
+            except: pass
+        time.sleep(0.1)
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(CONNECT_TIMEOUT)
         sock.connect((ip, port))
         sock.settimeout(None) # Switch to blocking after connection
+        add_message("Connected. Authenticating...", 6, play_sound=False)
+        needs_redraw.set()
+        if stdscr:
+            try: stdscr.refresh()
+            except: pass
 
-        # Add connected message only for initial connect or MANUAL reconnect attempt
-        if not auto_reconnect:
-            add_message("Connected. Authenticating...", 6, play_sound=False)
-            needs_redraw.set()
-            if stdscr:
-                try: stdscr.refresh()
-                except: pass
-
-        # --- Authentication Steps ---
-        final_password_to_send = "" # Holds the user password actually sent
+        # --- Authentication/Registration Steps ---
 
         # 1. Server Password
         server_prompt_bytes = sock.recv(1024)
         if not server_prompt_bytes: raise ConnectionAbortedError("Server closed connection (before server password prompt).")
-        server_prompt = server_prompt_bytes.decode("utf-8", errors='replace')
+        server_prompt = server_prompt_bytes.decode("utf-8", errors='replace').strip()
 
         # Prompt only if not provided AND NOT auto-reconnecting
         if not temp_server_pw and not auto_reconnect:
@@ -766,7 +758,7 @@ def attempt_connection(stdscr, ip, port, server_pw_saved, username_saved, user_p
         # 2. Username
         user_prompt_bytes = sock.recv(1024)
         if not user_prompt_bytes: raise ConnectionAbortedError("Server closed connection (before username prompt).")
-        user_prompt = user_prompt_bytes.decode("utf-8", errors='replace')
+        user_prompt = user_prompt_bytes.decode("utf-8", errors='replace').strip()
 
         # Prompt only if not provided AND NOT auto-reconnecting
         if not temp_username and not auto_reconnect:
@@ -778,84 +770,132 @@ def attempt_connection(stdscr, ip, port, server_pw_saved, username_saved, user_p
             raise ConnectionAbortedError("Auto-reconnect failed: Missing username.")
 
         sock.sendall(temp_username.encode("utf-8"))
-        # Don't set global CURRENT_USER until login is confirmed successful
+        # Don't set global CURRENT_USER until login/registration is confirmed successful
 
-        # 3. User Password
-        prompt_for_user_password = True # Assume prompt needed unless logic below changes it
+        # 3. Receive Next Prompt (Could be for Password or Registration)
+        next_prompt_bytes = sock.recv(1024)
+        if not next_prompt_bytes: raise ConnectionAbortedError("Server closed connection (before user password/registration prompt).")
+        next_prompt = next_prompt_bytes.decode("utf-8", errors='replace').strip()
 
-        # Use saved password if auto-reconnecting or if present during initial connect
-        if auto_reconnect and temp_user_pw is not None:
-            final_password_to_send = temp_user_pw
-            prompt_for_user_password = False
-        elif not auto_reconnect and temp_user_pw is not None:
-            final_password_to_send = temp_user_pw
-            prompt_for_user_password = False
-        elif auto_reconnect and temp_user_pw is None:
-            # Should have been caught, safeguard.
-            raise ConnectionAbortedError("Auto-reconnect failed: Missing user password.")
-        # Else (initial connect, no password saved) -> prompt_for_user_password remains True
-
-        # Receive password prompt from server
-        pass_prompt_bytes = sock.recv(1024)
-        if not pass_prompt_bytes: raise ConnectionAbortedError("Server closed connection (before user password prompt).")
-        pass_prompt = pass_prompt_bytes.decode("utf-8", errors='replace')
-
-        # Prompt if needed (only initial connect with no saved password)
-        if prompt_for_user_password:
-            # This block should only be reachable if auto_reconnect is False and temp_user_pw was None
-            if auto_reconnect: # Defensive check
-                raise ConnectionAbortedError("Auto-reconnect logic error: Tried to prompt for user password.")
-            if not stdscr: raise RuntimeError("stdscr required for user password prompt.")
-            final_password_to_send = get_string_input(stdscr, curses.LINES - 1, strip_ansi_codes(pass_prompt), is_password=True)
+        # --- Check if it's a Registration prompt ---
+        if "new_password:new_password" in next_prompt:
+            # --- REGISTRATION PATH ---
+            add_message("Username not found on server. Registering...", 6, play_sound=False)
             needs_redraw.set()
+            if stdscr: stdscr.refresh()
 
-        # Send the password
-        sock.sendall(final_password_to_send.encode("utf-8"))
+            if auto_reconnect:
+                # This shouldn't happen if credentials were correct for auto-reconnect
+                raise ConnectionAbortedError("Auto-reconnect failed: Server prompted for registration unexpectedly.")
+            if not stdscr:
+                raise RuntimeError("stdscr required for registration password prompt.")
 
-        # 4. Check Login Response
-        login_response_bytes = sock.recv(1024)
-        if not login_response_bytes: raise ConnectionAbortedError("Server closed connection after password submission.")
-        login_response = login_response_bytes.decode("utf-8", errors='replace')
+            # Prompt for new password twice
+            new_pass1 = get_string_input(stdscr, curses.LINES - 1, "Enter new password:", is_password=True)
+            needs_redraw.set() # Redraw UI to show next prompt cleanly
+            if not new_pass1: # User likely cancelled or entered nothing
+                 add_message("Password cannot be empty. Registration cancelled.", 3, play_sound=False)
+                 raise ConnectionAbortedError("Registration cancelled by user (empty password).")
 
-        if "Login successful" not in login_response:
-            raise ConnectionAbortedError(f"Login Failed: {strip_ansi_codes(login_response)}")
+            new_pass2 = get_string_input(stdscr, curses.LINES - 1, "Confirm new password:", is_password=True)
+            needs_redraw.set() # Redraw UI after last prompt
 
-        # --- Login Successful ---
+            if new_pass1 == new_pass2:
+                # Passwords match, send in required format
+                registration_payload = f"{new_pass1}:{new_pass2}"
+                password_used_for_auth = new_pass1 # Store the password for potential saving
+                sock.sendall(registration_payload.encode("utf-8"))
+                add_message("Registration details sent. Waiting for confirmation...", 6, play_sound=False)
+                needs_redraw.set()
+            else:
+                # Passwords don't match
+                add_message("Passwords do not match. Registration failed.", 3, play_sound=False)
+                raise ConnectionAbortedError("Registration failed (password mismatch).")
+
+        else:
+            # --- NORMAL LOGIN PATH (Existing User) ---
+            login_password_to_send = "" # Holds the user password actually sent in this path
+
+            # Determine if we use saved password or need to prompt
+            prompt_for_user_password = True
+            if auto_reconnect and temp_user_pw is not None:
+                login_password_to_send = temp_user_pw
+                prompt_for_user_password = False
+            elif not auto_reconnect and temp_user_pw is not None:
+                 # Check if the saved password should be used or if user wants to re-enter
+                 # For simplicity, we'll use the saved one if available on initial connect
+                 # A more complex UI could ask 'Use saved password? (y/n)' here.
+                 login_password_to_send = temp_user_pw
+                 prompt_for_user_password = False # Assume using saved if available initially
+            elif auto_reconnect and temp_user_pw is None:
+                 # Should have been caught, safeguard.
+                 raise ConnectionAbortedError("Auto-reconnect failed: Missing user password for login.")
+            # Else (initial connect, no password saved) -> prompt_for_user_password remains True
+
+            # Prompt if needed (only initial connect with no saved password, or if logic above dictates)
+            if prompt_for_user_password:
+                # This block should only be reachable if auto_reconnect is False and temp_user_pw was None
+                if auto_reconnect: # Defensive check
+                    raise ConnectionAbortedError("Auto-reconnect logic error: Tried to prompt for login password.")
+                if not stdscr: raise RuntimeError("stdscr required for user password prompt.")
+                # Use the prompt we received from the server
+                login_password_to_send = get_string_input(stdscr, curses.LINES - 1, strip_ansi_codes(next_prompt), is_password=True)
+                needs_redraw.set()
+
+            # Send the password
+            password_used_for_auth = login_password_to_send # Store the password for potential saving
+            sock.sendall(login_password_to_send.encode("utf-8"))
+
+
+        # 4. Check Final Login/Registration Response
+        final_response_bytes = sock.recv(1024)
+        if not final_response_bytes: raise ConnectionAbortedError("Server closed connection after password/registration submission.")
+        final_response = final_response_bytes.decode("utf-8", errors='replace').strip()
+
+        # Check for either success message
+        if "Login successful" not in final_response and "Registration successful" not in final_response:
+            # Clean up the server response message for display
+            cleaned_response = strip_ansi_codes(final_response).replace('\n', ' ').strip()
+            raise ConnectionAbortedError(f"Login/Registration Failed: {cleaned_response}")
+
+        # --- Login or Registration Successful ---
         CURRENT_USER = temp_username # Set global username NOW
-        # Display welcome message only for initial connect or MANUAL reconnect
-        if not auto_reconnect:
-            add_message(f"Login successful. Welcome {CURRENT_USER}!", 4, play_sound=False)
+        success_message = "Login successful" if "Login successful" in final_response else "Registration successful"
+        add_message(f"{success_message}. Welcome {CURRENT_USER}!", 4, play_sound=False)
 
-        # Save session details (always save on successful login to update timestamp or new credentials)
-        save_session(ip, port, temp_server_pw, temp_username, final_password_to_send)
+        # Save session details (always save on successful login/registration)
+        # Use password_used_for_auth which was set in the appropriate path above
+        save_session(ip, port, temp_server_pw, temp_username, password_used_for_auth)
 
         needs_redraw.set()
         return sock # Return the connected and authenticated socket
 
     except (socket.error, OSError, EOFError, ConnectionAbortedError, RuntimeError) as e:
-        # Handle connection, authentication, or prompting errors
-        # Add error message only if NOT auto-reconnecting
-        if not auto_reconnect:
-            add_message(f"Connection/Auth Failed: {e}", 3, play_sound=False)
-            needs_redraw.set()
-            if stdscr:
-                try:
-                    curses.noecho(); curses.curs_set(0)
-                except: pass
+        # Handle connection, authentication, prompting, or registration errors
+        add_message(f"Connection/Auth/Reg Failed: {e}", 3, play_sound=False)
         if sock:
             try: sock.close()
             except: pass
+        needs_redraw.set()
+        if stdscr:
+            try:
+                curses.noecho()
+                curses.curs_set(0)
+            except: pass
         return None # Indicate failure
     except Exception as e: # Catch any other unexpected errors
-        if not auto_reconnect:
-            add_message(f"Unexpected Connection Error: {e}", 3, play_sound=False)
-            needs_redraw.set()
-            if stdscr:
-                try:
-                    curses.noecho(); curses.curs_set(0)
-                except: pass
+        add_message(f"Unexpected Connection Error: {e}", 3, play_sound=False)
+        # Consider adding full traceback logging here for debugging
+        # import traceback
+        # traceback.print_exc()
         if sock:
             try: sock.close()
+            except: pass
+        needs_redraw.set()
+        if stdscr:
+            try:
+                curses.noecho()
+                curses.curs_set(0)
             except: pass
         return None # Indicate failure
 
