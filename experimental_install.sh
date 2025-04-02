@@ -82,10 +82,10 @@ done
 
 # --- Dependency Installation (Python + TK) ---
 
-if ! command_exists python3; then
-    info "Python 3 not found. Attempting installation..."
-    PACKAGE_MANAGER=""
-    INSTALL_CMD=""
+# if ! command_exists python3; then
+#     info "Python 3 not found. Attempting installation..." # Always install dependencies for now need to work on that later
+#     PACKAGE_MANAGER=""
+#     INSTALL_CMD=""
 
     if command_exists apt; then
         PACKAGE_MANAGER="apt"
