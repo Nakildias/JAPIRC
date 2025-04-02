@@ -153,6 +153,8 @@ source "${VENV_DIR}/bin/activate" || error "Failed to activate virtual environme
 
 info "Upgrading pip..."
 python -m pip install --upgrade pip || error "Failed to upgrade pip in venv."
+# Make sure those are upgraded or playsound might fail to install.
+pip install --upgrade setuptools wheel
 
 info "Installing Python dependencies into virtual environment..."
 python -m pip install "${PYTHON_DEPS[@]}" || error "Failed to install Python dependencies."
