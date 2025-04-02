@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
@@ -11,7 +11,7 @@ set -o pipefail
 APP_NAME="JAPIRC"
 VENV_DIR="$HOME/.local/share/${APP_NAME}" # More standard location than ~/.python3
 TARGET_BIN_DIR="/usr/local/bin"          # Standard location for user-installed executables
-SOURCE_FILES=(                            # Files to copy relative to script location
+SOURCE_FILES=(                           # Files to copy relative to script location
     "notification.wav"
     "JAPIRC_TUI.client.py"
     "JAPIRC_GUI.client.py"
@@ -80,128 +80,134 @@ for file in "${SOURCE_FILES[@]}"; do
     fi
 done
 
-# --- Dependency Installation (Python + TK) ---
+# --- System Dependency Installation (Always Run) ---
 
-# if ! command_exists python3; then
-#     info "Python 3 not found. Attempting installation..." # Always install dependencies for now need to work on that later
-#     PACKAGE_MANAGER=""
-#     INSTALL_CMD=""
+info "Attempting to install/update system dependencies (Python 3, TK, venv)..."
+PACKAGE_MANAGER=""
+INSTALL_CMD_ARGS=() # Use array for safer command construction
 
-    if command_exists apt; then
-        PACKAGE_MANAGER="apt"
-        INSTALL_CMD="update && sudo apt install -y python3 python3-tk python3-venv"
-    elif command_exists dnf; then
-        PACKAGE_MANAGER="dnf"
-        INSTALL_CMD="install -y python3 python3-tkinter python3-venv" # Fedora often needs python3-venv explicitly too
-    elif command_exists pacman; then
-        PACKAGE_MANAGER="pacman"
-        INSTALL_CMD="-Sy --noconfirm python tk" # Arch typically bundles venv
-    elif command_exists emerge; then
-        PACKAGE_MANAGER="emerge"
-        # Note: emerge --sync can be very long. Consider if it's always needed.
-        # Asking user (--ask) is safer than -y equivalent.
-        INSTALL_CMD="--sync && sudo emerge --ask dev-lang/python dev-tk"
-        warn "Gentoo support: Ensure USE flags for tk are enabled for python if needed."
-    else
-        error "Could not detect a supported package manager (apt, dnf, pacman, emerge). Please install Python 3 and Tkinter manually."
-    fi
-
-    info "Using ${PACKAGE_MANAGER} to install dependencies."
-    run_sudo "${PACKAGE_MANAGER}" ${INSTALL_CMD} || error "Failed to install Python 3 and TK using ${PACKAGE_MANAGER}."
-    info "Python 3 and TK installation complete."
+if command_exists apt; then
+    PACKAGE_MANAGER="apt"
+    run_sudo apt update # Update package list first
+    # Use array assignment
+    INSTALL_CMD_ARGS=(install -y python3 python3-tk python3-venv)
+elif command_exists dnf; then
+    PACKAGE_MANAGER="dnf"
+    INSTALL_CMD_ARGS=(install -y python3 python3-tkinter python3-venv)
+elif command_exists pacman; then
+    PACKAGE_MANAGER="pacman"
+    # -Syy forces refresh even if up-to-date, -S is usually sufficient
+    INSTALL_CMD_ARGS=(-S --noconfirm python tk)
+elif command_exists emerge; then
+    PACKAGE_MANAGER="emerge"
+    warn "Gentoo support: This may take time. Ensure USE flags for tk are enabled for python."
+    # Consider removing --sync or making it optional? It can be very slow.
+    # Maybe ask user? For now, keeping it simple. Using --ask is safer than a -y equivalent.
+    INSTALL_CMD_ARGS=(--ask dev-lang/python dev-tk/tk) # Use dev-tk/tk for tk
 else
-    info "Python 3 found: $(command -v python3)"
-    # Still check for venv module availability
-    if ! python3 -m venv --help >/dev/null 2>&1; then
-         warn "Python 3 'venv' module not found. Attempting to install..."
-         # Add logic similar to above to install *just* the venv package if needed
-         if command_exists apt; then
-            run_sudo apt update && run_sudo apt install -y python3-venv || error "Failed to install python3-venv."
-         elif command_exists dnf; then
-            run_sudo dnf install -y python3-venv || error "Failed to install python3-venv."
-         # Pacman/Emerge usually include it with python, less likely to be separate
-         else
-            warn "Could not automatically install 'venv' module for your system. Please install the appropriate package (e.g., python3-venv)."
-         fi
-    fi
+    error "Could not detect a supported package manager (apt, dnf, pacman, emerge). Please install Python 3, Tkinter, and the Python venv module manually."
 fi
 
-# --- Virtual Environment Setup ---
+info "Using ${PACKAGE_MANAGER} to install dependencies."
+# Pass arguments as separate strings using the array
+run_sudo "${PACKAGE_MANAGER}" "${INSTALL_CMD_ARGS[@]}" || error "Failed to install system dependencies using ${PACKAGE_MANAGER}."
+info "System dependency check/installation complete."
 
-if [[ ! -d "${VENV_DIR}" ]]; then
-    info "Creating Python virtual environment in ${VENV_DIR}"
-    mkdir -p "${VENV_DIR}" || error "Failed to create directory ${VENV_DIR}"
-    python3 -m venv "${VENV_DIR}" || error "Failed to create virtual environment."
+# Double check python3 and venv module after attempting install
+if ! command_exists python3; then
+    error "Python 3 installation failed or python3 is not in PATH."
+fi
+if ! python3 -m venv --help >/dev/null 2>&1; then
+    error "Python 3 'venv' module installation failed or is not available."
+fi
+info "Python 3 and venv module confirmed."
 
-    info "Copying application files..."
-    for file in "${SOURCE_FILES[@]}"; do
-        # Don't copy the main executable script itself into the venv, only supporting files/libs
-        if [[ "${file}" != "${MAIN_EXECUTABLE_NAME}" ]]; then
-            cp "${SCRIPT_DIR}/${file}" "${VENV_DIR}/" || error "Failed to copy ${file}"
-        fi
-    done
 
-    info "Installing Python dependencies into virtual environment..."
-    # Ensure pip is up-to-date first
-    "${VENV_DIR}/bin/python" -m pip install --upgrade pip || error "Failed to upgrade pip in venv."
-    # Install other dependencies
-    "${VENV_DIR}/bin/python" -m pip install "${PYTHON_DEPS[@]}" || error "Failed to install Python dependencies."
+# --- Cleanup Previous Installation (if exists) ---
 
-    info "Installing main executable to ${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}"
-    run_sudo cp "${SCRIPT_DIR}/${MAIN_EXECUTABLE_NAME}" "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" || error "Failed to copy executable."
-    run_sudo chmod +x "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" || error "Failed to set executable permission."
+if [[ -d "${VENV_DIR}" ]]; then
+    info "Existing installation found at ${VENV_DIR}. Reinstalling..."
+    info "Removing old virtual environment..."
+    rm -rf "${VENV_DIR}" || error "Failed to remove old virtual environment: ${VENV_DIR}"
 
-    # Create symlinks
+    info "Removing old executable and links from ${TARGET_BIN_DIR}..."
+    run_sudo rm -f "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" || warn "Could not remove old executable (might not exist)."
     for link_name in "${LINK_NAMES[@]}"; do
         TARGET_LINK="${TARGET_BIN_DIR}/${link_name}"
-        info "Creating symlink: ${TARGET_LINK} -> ${MAIN_EXECUTABLE_NAME}"
-        # Remove existing link if it exists, before creating new one
-        run_sudo rm -f "${TARGET_LINK}"
-        run_sudo ln -s "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" "${TARGET_LINK}" || error "Failed to create symlink ${link_name}"
+        run_sudo rm -f "${TARGET_LINK}" || warn "Could not remove old symlink ${link_name} (might not exist)."
     done
-
-    info "Virtual environment created and dependencies installed."
-
+    info "Previous installation cleanup complete."
 else
-    info "Virtual environment already exists at ${VENV_DIR}. Checking executable link..."
-    # Optional: Add logic here to update if needed (re-copy files, re-install deps)
-    # For now, just ensure the main executable link is okay
-    if [[ ! -x "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" ]]; then
-        warn "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME} not found or not executable. Re-installing link..."
-        run_sudo cp "${SCRIPT_DIR}/${MAIN_EXECUTABLE_NAME}" "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" || error "Failed to copy executable."
-        run_sudo chmod +x "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" || error "Failed to set executable permission."
-         # Recreate symlinks too
-        for link_name in "${LINK_NAMES[@]}"; do
-             TARGET_LINK="${TARGET_BIN_DIR}/${link_name}"
-             info "Recreating symlink: ${TARGET_LINK} -> ${MAIN_EXECUTABLE_NAME}"
-             run_sudo rm -f "${TARGET_LINK}"
-             run_sudo ln -s "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" "${TARGET_LINK}" || error "Failed to create symlink ${link_name}"
-        done
-    fi
-    info "Skipping venv creation and dependency installation."
+    info "No previous installation found at ${VENV_DIR}. Proceeding with new installation."
 fi
+
+# --- Virtual Environment Setup & Application Installation (Always Run) ---
+
+info "Creating Python virtual environment in ${VENV_DIR}"
+mkdir -p "$(dirname "${VENV_DIR}")" || error "Failed to create parent directory for ${VENV_DIR}"
+python3 -m venv "${VENV_DIR}" || error "Failed to create virtual environment."
+
+info "Activating virtual environment for dependency installation (temporary)"
+# Activate venv for pip commands - use source for bash compatibility
+source "${VENV_DIR}/bin/activate" || error "Failed to activate virtual environment."
+
+info "Upgrading pip..."
+python -m pip install --upgrade pip || error "Failed to upgrade pip in venv."
+
+info "Installing Python dependencies into virtual environment..."
+python -m pip install "${PYTHON_DEPS[@]}" || error "Failed to install Python dependencies."
+
+info "Deactivating virtual environment"
+deactivate # Good practice to deactivate after use in script
+
+info "Copying application files into virtual environment..."
+# Copy all source files EXCEPT the main executable itself into the venv
+for file in "${SOURCE_FILES[@]}"; do
+    if [[ "$(basename "${file}")" != "${MAIN_EXECUTABLE_NAME}" ]]; then
+        cp "${SCRIPT_DIR}/${file}" "${VENV_DIR}/" || error "Failed to copy ${file} into venv"
+    fi
+done
+
+info "Installing main executable to ${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}"
+run_sudo cp "${SCRIPT_DIR}/${MAIN_EXECUTABLE_NAME}" "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" || error "Failed to copy executable."
+run_sudo chmod +x "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" || error "Failed to set executable permission."
+
+# Create symlinks (remove first to ensure correctness)
+for link_name in "${LINK_NAMES[@]}"; do
+    TARGET_LINK="${TARGET_BIN_DIR}/${link_name}"
+    info "Creating symlink: ${TARGET_LINK} -> ${MAIN_EXECUTABLE_NAME}"
+    # Remove existing link first (handles cases where it points elsewhere or is broken)
+    run_sudo rm -f "${TARGET_LINK}" || warn "Could not remove potentially existing symlink ${TARGET_LINK}"
+    run_sudo ln -s "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" "${TARGET_LINK}" || error "Failed to create symlink ${link_name}"
+done
+
+info "Installation steps completed."
 
 
 # --- Final Check ---
 
-if command_exists "${MAIN_EXECUTABLE_NAME}"; then
-    info "-------------------------------------------"
-    info " Installation successful!"
-    info " Virtual Environment: ${VENV_DIR}"
-    info " Executable: ${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}"
-    info " You can now run the application using: ${MAIN_EXECUTABLE_NAME}, ${LINK_NAMES[*]}"
-    info "-------------------------------------------"
-else
-    # This check might fail if /usr/local/bin isn't immediately in PATH for the current shell
-    # Double-check the file exists as a fallback
-    if [[ -x "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" ]]; then
-        warn "Installation seems complete, but '${MAIN_EXECUTABLE_NAME}' not found in PATH."
-        warn "Please ensure '${TARGET_BIN_DIR}' is in your PATH environment variable."
-        warn "You might need to restart your shell or log out and back in."
-        info "Executable is located at: ${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}"
+# Check if the main executable file exists and is executable
+if [[ -x "${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}" ]]; then
+    # Check if the command is found in the PATH
+    if command_exists "${MAIN_EXECUTABLE_NAME}"; then
+        info "-------------------------------------------"
+        info " Installation successful!"
+        info " Virtual Environment: ${VENV_DIR}"
+        info " Executable: ${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}"
+        info " You should now be able to run the application using: ${MAIN_EXECUTABLE_NAME}, ${LINK_NAMES[*]}"
+        info " If the command isn't found immediately, try opening a new terminal session."
+        info "-------------------------------------------"
     else
-        error "Installation failed. Could not find executable command '${MAIN_EXECUTABLE_NAME}'."
+        warn "-------------------------------------------"
+        warn " Installation seems complete, but '${MAIN_EXECUTABLE_NAME}' not found in current PATH."
+        warn " Executable is located at: ${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}"
+        warn " Please ensure '${TARGET_BIN_DIR}' is in your PATH environment variable."
+        warn " You might need to restart your shell, log out and back in, or manually add it."
+        warn " Example (add to ~/.bashrc or ~/.zshrc): export PATH=\"${TARGET_BIN_DIR}:\$PATH\""
+        warn "-------------------------------------------"
     fi
+else
+    error "Installation failed. Could not find executable file at '${TARGET_BIN_DIR}/${MAIN_EXECUTABLE_NAME}' or it lacks execute permissions."
 fi
 
 exit 0
