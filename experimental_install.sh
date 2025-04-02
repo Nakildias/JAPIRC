@@ -93,7 +93,7 @@ if command_exists apt; then
     INSTALL_CMD_ARGS=(install -y python3 python3-tk python3-venv)
 elif command_exists dnf; then
     PACKAGE_MANAGER="dnf"
-    INSTALL_CMD_ARGS=(install -y python3 python3-tkinter python3-venv)
+    INSTALL_CMD_ARGS=(install -y python3 python3-tkinter python3-virtualenv)
 elif command_exists pacman; then
     PACKAGE_MANAGER="pacman"
     # -Syy forces refresh even if up-to-date, -S is usually sufficient
