@@ -12,6 +12,9 @@ TUI_SCRIPT="JAPIRC_TUI.client.py"
 GUI_SCRIPT="JAPIRC_GUI.client.py"
 SERVER_SCRIPT="JAPIRC_CLI.server.py"
 
+# Mount VENV_DIR for the filesystem of the server to be stored there.
+cd $VENV_DIR
+
 # --- Helper Functions ---
 info() {
     echo "[INFO] $1"
