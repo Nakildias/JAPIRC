@@ -1,24 +1,122 @@
-#!/bin/bash
-echo "Client or Server?"
-echo "1) Client (TUI)"
-echo "2) Client (GUI)"
-echo "3) Server"
-read input
-if [[ $input == 1 ]]; then
-    echo "Starting Just Another Python IRC TUI Client..."
-    cd ~/.python3/JAPIRC/
-    source ~/.python3/JAPIRC/bin/activate
-    python3 ~/.python3/JAPIRC/JAPIRC_TUI.client.py
-elif [[ $input == 2 ]]; then
-    echo "Starting Just Another Python IRC GUI Client..."
-    cd ~/.python3/JAPIRC/
-    source ~/.python3/JAPIRC/bin/activate
-    python3 ~/.python3/JAPIRC/JAPIRC_GUI.client.py
-elif [[ $input == 3 ]]; then
-    echo "Starting Just Another Python IRC CLI Server..."
-    cd ~/.python3/JAPIRC/
-    source ~/.python3/JAPIRC/bin/activate
-    python3 ~/.python3/JAPIRC/JAPIRC_CLI.server.py
-else
-    echo "Invalid input"
+#!/usr/bin/bash
+#EXPERIMENTAL
+
+# --- Configuration ---
+APP_NAME="JAPIRC"
+# Use the same VENV path as the installer script
+VENV_DIR="$HOME/.local/share/${APP_NAME}"
+VENV_PYTHON="${VENV_DIR}/bin/python"
+
+# Script names within the VENV_DIR
+TUI_SCRIPT="JAPIRC_TUI.client.py"
+GUI_SCRIPT="JAPIRC_GUI.client.py"
+SERVER_SCRIPT="JAPIRC_CLI.server.py"
+
+# --- Helper Functions ---
+info() {
+    echo "[INFO] $1"
+}
+
+error() {
+    echo "[ERROR] $1" >&2
+    exit 1
+}
+
+# Function to run a specific JAPIRC component
+run_japirc() {
+    local mode_desc="$1"
+    local script_name="$2"
+    # All arguments *after* the script_name are passed to the python script
+    shift 2
+    local script_path="${VENV_DIR}/${script_name}"
+    local python_args=("$@") # Capture remaining arguments
+
+    info "Attempting to start ${mode_desc}..."
+
+    if [[ ! -f "${script_path}" ]]; then
+        error "Required script not found: ${script_path}"
+    fi
+
+    info "Executing: ${VENV_PYTHON} ${script_path} ${python_args[*]}"
+    # Execute the python script using the venv's interpreter
+    # Pass any additional arguments ($@) to the Python script
+    "${VENV_PYTHON}" "${script_path}" "${python_args[@]}"
+}
+
+# --- Sanity Checks ---
+if [[ ! -d "${VENV_DIR}" ]]; then
+    error "Virtual environment directory not found: ${VENV_DIR}"
+    error "Please ensure ${APP_NAME} was installed correctly."
 fi
+
+if [[ ! -x "${VENV_PYTHON}" ]]; then
+    error "Python interpreter not found or not executable in virtual environment: ${VENV_PYTHON}"
+    error "The virtual environment might be corrupted. Try reinstalling ${APP_NAME}."
+fi
+
+
+# --- Main Logic ---
+
+# Check if arguments were passed to the script
+if [[ $# -gt 0 ]]; then
+    MODE="$1"
+    shift # Remove the mode argument, keep the rest for the python script
+    case "${MODE,,}" in # Convert mode to lowercase for case-insensitivity
+        tui|client-tui|1)
+            run_japirc "Client (TUI)" "${TUI_SCRIPT}" "$@"
+            ;;
+        gui|client-gui|2)
+            # Check if DISPLAY is available for GUI mode
+            if [[ -z "${DISPLAY:-}" ]]; then
+                 error "DISPLAY environment variable not set. Cannot start GUI mode."
+            fi
+            run_japirc "Client (GUI)" "${GUI_SCRIPT}" "$@"
+            ;;
+        server|3)
+            run_japirc "Server (CLI)" "${SERVER_SCRIPT}" "$@"
+            ;;
+        -h|--help)
+            echo "Usage: $0 [mode] [python_script_args...]"
+            echo "Modes:"
+            echo "  tui     : Start the Text User Interface Client"
+            echo "  gui     : Start the Graphical User Interface Client"
+            echo "  server  : Start the Command Line Interface Server"
+            echo "  (No mode): Show interactive selection menu"
+            echo ""
+            echo "Any arguments after the mode will be passed directly to the selected Python script."
+            exit 0
+            ;;
+        *)
+            error "Invalid mode: ${MODE}. Use 'tui', 'gui', 'server', or no argument for interactive menu. Use --help for more info."
+            ;;
+    esac
+else
+    # Interactive Mode
+    echo "Select mode for ${APP_NAME}:"
+    echo "  1) Client (TUI)"
+    echo "  2) Client (GUI)"
+    echo "  3) Server (CLI)"
+    read -p "Enter selection (1-3): " input
+
+    case "$input" in
+        1)
+            run_japirc "Client (TUI)" "${TUI_SCRIPT}"
+            ;;
+        2)
+             # Check if DISPLAY is available for GUI mode
+            if [[ -z "${DISPLAY:-}" ]]; then
+                 error "DISPLAY environment variable not set. Cannot start GUI mode."
+            fi
+            run_japirc "Client (GUI)" "${GUI_SCRIPT}"
+            ;;
+        3)
+            run_japirc "Server (CLI)" "${SERVER_SCRIPT}"
+            ;;
+        *)
+            error "Invalid input: ${input}. Please enter 1, 2, or 3."
+            ;;
+    esac
+fi
+
+# If the run_japirc function was successful, exit 0
+exit 0
