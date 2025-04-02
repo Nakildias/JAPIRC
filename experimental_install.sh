@@ -103,7 +103,7 @@ elif command_exists emerge; then
     warn "Gentoo support: This may take time. Ensure USE flags for tk are enabled for python."
     # Consider removing --sync or making it optional? It can be very slow.
     # Maybe ask user? For now, keeping it simple. Using --ask is safer than a -y equivalent.
-    INSTALL_CMD_ARGS=(--ask dev-lang/python dev-tk/tk) # Use dev-tk/tk for tk
+    INSTALL_CMD_ARGS=(--ask dev-lang/python dev-lang/tk) # Use dev-lang/tk for tk
 else
     error "Could not detect a supported package manager (apt, dnf, pacman, emerge). Please install Python 3, Tkinter, and the Python venv module manually."
 fi
