@@ -1,5 +1,10 @@
+# -*- coding: utf-8 -*-
+# Add this line at the very top if you encounter encoding issues with file paths
+
 import socket
 import customtkinter as ctk
+# Import CTkInputDialog explicitly
+from customtkinter import CTkInputDialog
 from tkinter import messagebox, BOTH, LEFT, RIGHT, TOP, X, Y, END, DISABLED, NORMAL # Import specific tkinter constants
 import datetime
 import threading
@@ -145,7 +150,7 @@ def handle_file_drop(event):
         print(f"[Debug] Raw drop data: {event.data}")
 
 
-# --- Login Function (Unchanged) ---
+# --- MODIFIED Login Function ---
 def login():
     global client_socket, username, login_window, login_button
     global ip_entry, port_entry, password_entry, username_entry, user_password_entry
@@ -155,23 +160,25 @@ def login():
     server_port_str = port_entry.get()
     server_password_input = password_entry.get()
     username_input = username_entry.get()
-    user_password_input = user_password_entry.get()
+    user_password_input = user_password_entry.get() # This is for EXISTING users
 
     if not server_port_str.isdigit():
         messagebox.showerror("Error", "Server Port must be a number.")
         return
     server_port = int(server_port_str)
 
-    # Check all required fields are filled
-    if not all([server_ip, server_port_str, server_password_input, username_input, user_password_input]):
-        messagebox.showerror("Error", "Please fill in all fields.")
+    # Check only initial required fields (user password might not be needed if registering)
+    if not all([server_ip, server_port_str, server_password_input, username_input]):
+        messagebox.showerror("Error", "Please fill in Server IP, Port, Server Password, and Username.")
         return
 
-    if login_button: login_button.configure(state="disabled", text="Logging in...")
+    if login_button: login_button.configure(state="disabled", text="Connecting...")
 
     # Get checkbox states
     is_remember_checked = bool(remember_session_checkbox.get()) if remember_session_checkbox else False
-    is_save_passwords_checked = bool(save_passwords_checkbox.get()) if save_passwords_checkbox else False # <<< NEW
+    is_save_passwords_checked = bool(save_passwords_checkbox.get()) if save_passwords_checkbox else False
+
+    login_successful = False # Flag to track overall success
 
     try:
         if client_socket:
@@ -180,80 +187,164 @@ def login():
             client_socket = None
 
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_socket.settimeout(10)
+        client_socket.settimeout(10) # Timeout for connection and initial steps
         client_socket.connect((server_ip, server_port))
+        if login_button: login_button.configure(text="Authenticating...")
 
-        # --- Login Sequence (Unchanged from previous working version) ---
-        response = client_socket.recv(1024).decode("utf-8", errors="ignore")
-        print(f"[Debug Login] R1: {response}")
+        # --- Step 1: Send Server Password ---
+        response1 = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
+        print(f"[Debug Login] R1: {response1}") # e.g., "Enter server password: "
+        if "Enter server password:" not in response1:
+             raise ValueError(f"Unexpected initial response:\n'{response1}'")
         client_socket.send(server_password_input.encode("utf-8"))
-        response = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
-        print(f"[Debug Login] R2: {response}")
-        if response == "Incorrect server password": raise ValueError("Incorrect server password.")
-        if "Enter username:" not in response: raise ValueError(f"Unexpected response after server pass:\n'{response}'")
+
+        # --- Step 2: Send Username ---
+        response2 = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
+        print(f"[Debug Login] R2: {response2}") # e.g., "Server password OK. Enter username: "
+        if "Enter username:" not in response2:
+             if response2 == "Incorrect server password.": # Check specific error first
+                 raise ValueError("Incorrect server password.")
+             else:
+                 raise ValueError(f"Unexpected response after server pass:\n'{response2}'")
         client_socket.send(username_input.encode("utf-8"))
-        response = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
-        print(f"[Debug Login] R3: {response}")
-        if response == "Username rejected or does not exist.": raise ValueError("Username rejected or does not exist.")
-        elif response == "Username already logged in.": raise ValueError("Username already logged in.")
-        if "Enter password:" not in response: raise ValueError(f"Unexpected response after username:\n'{response}'")
-        client_socket.send(user_password_input.encode("utf-8"))
-        response = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
-        print(f"[Debug Login] R4: {response}")
-        if response == "Incorrect password.": raise ValueError("Incorrect password.")
-        elif response != "Login successful.": raise ValueError(f"Unexpected final response:\n'{response}'")
-        # --- End Login Sequence ---
+        if login_button: login_button.configure(text="Checking User...")
 
-        client_socket.settimeout(None)
-        username = username_input
+        # --- Step 3: Handle Response after Username (Login, Register, or Error) ---
+        response3 = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
+        print(f"[Debug Login] R3: {response3}")
 
-        # --- Handle Session Saving ---
-        if is_remember_checked: # Only save if the main "Remember" box is checked
-            session_data = {
-                "ip": server_ip,
-                "port": server_port_str,
-                "username": username_input
-            }
-            if is_save_passwords_checked: # <<< NEW: Also check the password save box
-                session_data["server_password"] = server_password_input
-                session_data["user_password"] = user_password_input
-                print("[Info] Saving session including passwords (UNSAFE).")
+        # --- Case 3a: Existing User ---
+        if "Username OK. Enter password:" in response3:
+            print("[Debug Login] Existing user path.")
+            if login_button: login_button.configure(text="Sending Password...")
+            # Check if user password was provided in the UI
+            if not user_password_input:
+                 raise ValueError("Existing user requires User Password field to be filled.")
+            client_socket.send(user_password_input.encode("utf-8"))
+            response4_login = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
+            print(f"[Debug Login] R4 (Login): {response4_login}")
+            if response4_login == "Login successful.":
+                login_successful = True
+            elif response4_login == "Incorrect password.":
+                 raise ValueError("Incorrect user password.")
             else:
-                print("[Info] Saving session (IP, Port, User only).")
+                 raise ValueError(f"Unexpected final login response:\n'{response4_login}'")
 
-            save_session(session_data)
+        # --- Case 3b: Registration Needed ---
+        elif "Username not found. Enter password in format 'new_password:new_password' to register:" in response3:
+            print("[Debug Login] Registration path.")
+            if login_button: login_button.configure(text="Awaiting Reg Info...")
+
+            # Use CTkInputDialog to get the registration password
+            dialog = CTkInputDialog(text="Username not found.\nEnter registration password (format: password:password)", title="Register New User")
+            reg_password = dialog.get_input() # This blocks until dialog is closed
+
+            if reg_password is None: # User cancelled the dialog
+                raise ValueError("Registration cancelled by user.")
+
+            # Basic local validation
+            parts = reg_password.split(':')
+            if not (len(parts) == 2 and parts[0] and parts[0] == parts[1]):
+                raise ValueError("Invalid registration password format.\nMust be 'password:password' and parts must match.")
+
+            # Send registration password to server
+            if login_button: login_button.configure(text="Registering...")
+            client_socket.send(reg_password.encode("utf-8"))
+
+            # Get final response after registration attempt
+            response4_reg = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
+            print(f"[Debug Login] R4 (Register): {response4_reg}")
+            if response4_reg == "Registration successful.":
+                login_successful = True
+                # If registration is successful, the user_password_input wasn't used, but we might still save it
+                # based on the checkbox. The server handles the actual password saving.
+            else:
+                # Show the specific error message from the server
+                raise ValueError(f"Registration failed: {response4_reg}")
+
+        # --- Case 3c: Registration Disabled ---
+        elif "User registration is not enabled on this server." in response3:
+            raise ValueError("Registration failed: User registration is not enabled on this server.")
+
+        # --- Case 3d: Other Errors after Username ---
+        elif response3 == "Username already logged in.":
+            raise ValueError("Login failed: Username already logged in.")
+        elif response3 == "Username rejected or does not exist.": # Should be covered by registration case now, but keep as fallback
+            raise ValueError("Login failed: Username rejected by server.")
+        elif "Username invalid" in response3: # Catch invalid username format error
+             raise ValueError(f"Login failed: {response3}")
         else:
-            clear_session() # Clear session if main box is unchecked
+            # Catch any other unexpected response
+            raise ValueError(f"Unexpected response after username:\n'{response3}'")
 
-        if login_window: login_window.withdraw()
-        open_chat_window()
-        recv_thread = threading.Thread(target=receive_messages, name="ReceiveThread", daemon=True)
-        recv_thread.start()
 
-    except ValueError as e:
-         messagebox.showerror("Login Failed", str(e))
+        # --- If Login or Registration was Successful ---
+        if login_successful:
+            client_socket.settimeout(None) # Disable timeout for regular chat
+            username = username_input # Set global username
+
+            # --- Handle Session Saving ---
+            if is_remember_checked: # Only save if the main "Remember" box is checked
+                session_data = {
+                    "ip": server_ip,
+                    "port": server_port_str,
+                    "username": username_input
+                }
+                # Save passwords ONLY if the specific checkbox is ticked
+                if is_save_passwords_checked:
+                    session_data["server_password"] = server_password_input
+                    # Save the user_password_input only if it wasn't a registration flow
+                    # Or maybe always save what's in the box? Let's save what's in the box.
+                    session_data["user_password"] = user_password_input # Save what's in the user password box
+                    print("[Info] Saving session including passwords (UNSAFE).")
+                else:
+                    print("[Info] Saving session (IP, Port, User only).")
+
+                save_session(session_data)
+            else:
+                clear_session() # Clear session if main box is unchecked
+
+            # --- Transition to Chat Window ---
+            if login_window: login_window.withdraw()
+            open_chat_window()
+            recv_thread = threading.Thread(target=receive_messages, name="ReceiveThread", daemon=True)
+            recv_thread.start()
+
+
+    except ValueError as e: # Catch specific login/registration logic errors
+         messagebox.showerror("Login/Registration Failed", str(e))
          if client_socket: client_socket.close()
          client_socket = None
+         login_successful = False # Ensure flag is False
     except socket.timeout:
         messagebox.showerror("Connection Error", "Connection timed out.")
         if client_socket: client_socket.close()
         client_socket = None
+        login_successful = False
     except ConnectionRefusedError:
         messagebox.showerror("Connection Error", "Connection refused by the server.")
         if client_socket: client_socket.close()
         client_socket = None
+        login_successful = False
     except socket.gaierror:
          messagebox.showerror("Connection Error", "Server IP/Hostname invalid or not found.")
          if client_socket: client_socket.close()
          client_socket = None
+         login_successful = False
     except Exception as e:
         messagebox.showerror("Connection Error", f"An unexpected error occurred: {e}")
+        import traceback
+        traceback.print_exc() # Log unexpected errors
         if client_socket: client_socket.close()
         client_socket = None
+        login_successful = False
     finally:
-        if login_button and login_button.winfo_exists():
-            if not client_socket:
+        # Re-enable login button only if login/registration failed AND the button exists
+        if not login_successful and login_button and login_button.winfo_exists():
+             try:
                  login_button.configure(state="normal", text="Login")
+             except Exception as ui_error:
+                 print(f"Error resetting login button: {ui_error}")
 
 
 # --- Open Chat Window (Added "file_status" tag) ---
@@ -304,7 +395,7 @@ def open_chat_window():
     # Configure message tags
     message_box.tag_config("incoming", foreground="#00BFFF") # DodgerBlue
     message_box.tag_config("outgoing", foreground="#7B68EE") # MediumSlateBlue
-    message_box.tag_config("error", foreground="#FF0000")    # Red
+    message_box.tag_config("error", foreground="#FF0000")   # Red
     message_box.tag_config("client_command_output", foreground="#2E8B57") # SeaGreen
     message_box.tag_config("file_status", foreground="#00FFFF") # Cyan <<< NEW TAG for file transfers
 
@@ -338,7 +429,7 @@ def open_chat_window():
     message_entry.focus_set()
 
 
-# --- Action Functions (Unchanged) ---
+# --- Action Functions ---
 def logout_action():
     print("[Info] Logout button clicked.")
     on_chat_window_close()
@@ -382,7 +473,7 @@ def close_app_action():
         root.quit()
         root.destroy() # Ensure root is destroyed
 
-# --- Chat Window Close Handling (Unchanged) ---
+# --- Chat Window Close Handling ---
 def on_chat_window_close():
     global client_socket, chat_window, login_window
     if client_socket:
@@ -414,7 +505,7 @@ def on_chat_window_close():
              login_window.lift()
              # Reset login button state if needed (though handle_disconnection might also do this)
              if login_button and login_button.winfo_exists():
-                 login_button.configure(state="normal", text="Login")
+                  login_button.configure(state="normal", text="Login")
          except Exception as e:
              print(f"[Error] Could not show login window: {e}. Quitting.")
              if root: root.quit()
@@ -423,7 +514,7 @@ def on_chat_window_close():
         if root: root.quit()
 
 
-# --- Send Message Function (Unchanged) ---
+# --- Send Message Function ---
 def send_message():
     global client_socket, message_entry, username
     if not message_entry: return
@@ -526,9 +617,19 @@ def receive_messages():
                 if message_bytes.startswith(b"FILE_TRANSFER:"):
                     # Manually find the end of the header line
                     try:
-                        header_end_index = message_bytes.index(b'\n') # Assuming newline ends header
-                        header_line = message_bytes[:header_end_index].decode("utf-8", errors="ignore")
-                        remaining_data = message_bytes[header_end_index+1:] # The rest is file data
+                        # Assume header ends at the first newline. Need robust parsing if headers change.
+                        header_end_index = message_bytes.find(b'\n')
+                        if header_end_index == -1: # Header doesn't end in this chunk? Unlikely but possible
+                            print("[Error] Incomplete file transfer header received in chunk.")
+                            # If the chunk IS the header and no newline, treat it as text for now
+                            # This might fail later, but avoids crashing here. A better solution
+                            # would buffer incomplete headers.
+                            header_line = message_bytes.decode("utf-8", errors="ignore")
+                            remaining_data = b""
+                        else:
+                            header_line = message_bytes[:header_end_index].decode("utf-8", errors="ignore")
+                            remaining_data = message_bytes[header_end_index+1:] # The rest is file data
+
                         message = header_line # Process the header
                         print(f"[Debug] Parsed header: {header_line}")
                         is_file_transfer_chunk = True
@@ -584,13 +685,13 @@ def receive_messages():
                             # print(f"[Debug File] Received chunk: {len(chunk)} bytes. Total: {bytes_received}/{file_size}")
 
                     if bytes_received == file_size:
-                         # Use the new "file_status" tag and nicer completion message
-                         display_message(f"✅ File '{os.path.basename(filename)}' saved to Downloads folder.\n", "file_status")
-                         play_notification_sound() # Play sound on successful download
+                        # Use the new "file_status" tag and nicer completion message
+                        display_message(f"✅ File '{os.path.basename(filename)}' saved to Downloads folder.\n", "file_status")
+                        play_notification_sound() # Play sound on successful download
                     else:
-                         display_message(f"❌ Download incomplete for {filename}. Received {bytes_received}/{file_size} bytes.\n", "error")
-                         # Optionally delete the incomplete file
-                         # if os.path.exists(save_path): os.remove(save_path)
+                        display_message(f"❌ Download incomplete for {filename}. Received {bytes_received}/{file_size} bytes.\n", "error")
+                        # Optionally delete the incomplete file
+                        # if os.path.exists(save_path): os.remove(save_path)
 
                 except IOError as e:
                     display_message(f"Error saving file {filename}: {e}\n", "error")
@@ -713,7 +814,7 @@ def update_file_sidebar(list_username, filenames):
         file_label.bind("<Button-1>", lambda event, fn=filename, uploader=list_username: request_file_download(fn, uploader))
 
 
-# --- Play Sound (Unchanged) ---
+# --- Play Sound ---
 def play_notification_sound():
     """Plays the notification sound in a separate thread if enabled."""
     def play_sound():
@@ -734,7 +835,7 @@ def play_notification_sound():
         # Run in a separate thread to avoid blocking UI or network operations
         threading.Thread(target=play_sound, name="SoundThread", daemon=True).start()
 
-# --- Handle Disconnection (Unchanged) ---
+# --- Handle Disconnection ---
 def handle_disconnection(reason="Connection lost."):
     global client_socket, chat_window, message_entry, send_button, file_sidebar_scrollable, login_window, login_button
 
@@ -768,7 +869,7 @@ def handle_disconnection(reason="Connection lost."):
                 login_window.lift()
                 # Ensure login button is enabled
                 if login_button and login_button.winfo_exists():
-                    login_button.configure(state="normal", text="Login")
+                     login_button.configure(state="normal", text="Login")
             except Exception as e: print(f"Error showing/enabling login window on disconnect: {e}")
         else: print("[Info] Login window not available during disconnect handling.")
 
@@ -778,7 +879,7 @@ def handle_disconnection(reason="Connection lost."):
         # If root is gone, can't schedule UI updates
         print("[Error] Root window doesn't exist, cannot schedule UI updates for disconnection.")
 
-# --- Display Message (Unchanged) ---
+# --- Display Message ---
 def display_message(message, tag):
     """Safely displays a message in the message_box from any thread."""
     def _insert():
@@ -807,7 +908,7 @@ def display_message(message, tag):
         # Log if root isn't available for scheduling
         print(f"[Error] Cannot schedule display for message (UI root not ready?): {message}")
 
-# --- Process ANSI (Unchanged) ---
+# --- Process ANSI ---
 def process_ansi_colors(message):
     """Removes ANSI escape codes from a string."""
     ansi_pattern = r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])'
@@ -840,7 +941,7 @@ def show_help():
     )
     display_message(help_message, "client_command_output")
 
-# --- Toggle Sound (Unchanged) ---
+# --- Toggle Sound ---
 def toggle_sound():
     """Toggles the notification sound on or off and saves the setting."""
     global NOTIFICATION_SOUND
@@ -850,7 +951,7 @@ def toggle_sound():
     display_message(f" Notification sound {status}.\n", "client_command_output")
 
 
-# --- Main Application Setup (Unchanged) ---
+# --- Main Application Setup ---
 def main():
     global root, login_window, ip_entry, port_entry, password_entry, username_entry, user_password_entry, login_button
     global remember_session_checkbox, save_passwords_checkbox # <<< Make new checkbox global
@@ -884,7 +985,7 @@ def main():
     ip_entry.pack(pady=1)
 
     ctk.CTkLabel(login_window, text="Server Port").pack(pady=(10, 2))
-    port_entry = ctk.CTkEntry(login_window, width=250, placeholder_text="e.g., 6667")
+    port_entry = ctk.CTkEntry(login_window, width=250, placeholder_text="e.g., 5050") # Default port hint
     port_entry.pack(pady=1)
 
     ctk.CTkLabel(login_window, text="Server Password").pack(pady=(10, 2))
@@ -892,11 +993,11 @@ def main():
     password_entry.pack(pady=1)
 
     ctk.CTkLabel(login_window, text="Username").pack(pady=(10, 2))
-    username_entry = ctk.CTkEntry(login_window, width=250, placeholder_text="Alphanumeric, no spaces")
+    username_entry = ctk.CTkEntry(login_window, width=250, placeholder_text="Alphanumeric, _, -") # More precise hint
     username_entry.pack(pady=1)
 
     ctk.CTkLabel(login_window, text="User Password").pack(pady=(10, 2))
-    user_password_entry = ctk.CTkEntry(login_window, show="*", width=250)
+    user_password_entry = ctk.CTkEntry(login_window, show="*", width=250, placeholder_text="Required for login/Optional for register") # Hint
     user_password_entry.pack(pady=1)
 
     # --- Remember Session Checkbox (IP/Port/User) ---
@@ -916,7 +1017,7 @@ def main():
     if loaded_session:
         print("[Info] Pre-filling login info from session file.")
         ip_entry.insert(0, loaded_session.get("ip", ""))
-        port_entry.insert(0, loaded_session.get("port", ""))
+        port_entry.insert(0, loaded_session.get("port", "5050")) # Default port if missing
         username_entry.insert(0, loaded_session.get("username", ""))
         # Check the main remember box if session was loaded
         remember_session_checkbox.select()
@@ -950,7 +1051,7 @@ def main():
 
 
     # --- Login Button ---
-    login_button = ctk.CTkButton(login_window, text="Login", command=login, width=100)
+    login_button = ctk.CTkButton(login_window, text="Login / Register", command=login, width=130) # Updated text
     login_button.pack(pady=15) # Adjusted padding
 
     # --- Start Main Loop ---
@@ -970,5 +1071,8 @@ if __name__ == "__main__":
             # Might not be available on older Python versions or specific setups
             print("[Warning] Could not reconfigure stdout/stderr encoding.")
             pass
+        except Exception as enc_err:
+            print(f"[Error] Failed during encoding setup: {enc_err}")
+
 
     main()
