@@ -6,374 +6,1194 @@ import datetime
 import time
 import os
 import sys
-from colored import fg, attr
+from colored import fg, attr # Keep for server-side coloring
 
-# Server Configuration
+# --- Server Configuration ---
 HOST = "0.0.0.0"
-PORT = 5050
+PORT = 5050 # Make sure this matches the client's default
 USER_CREDENTIALS_FILE = "user_credentials.json"
 OPS_FILE = "ops.json"  # File to store operators
 SERVER_PASSWORD = "SuperSecret"  # Change this to your desired server password
-SERVER_NAME = "Server Name"  # Change this to your desired server name
-current_time = datetime.datetime.now().strftime("%X")
-FILE_DIRECTORY = "user_uploaded_files"  # Directory where uploaded files will be stored
+SERVER_NAME = "MyIRCServer"  # Change this to your desired server name
+FILE_DIRECTORY = "user_uploaded_files"  # Base directory for uploads
 
-# Make sure the file directory exists
-if not os.path.exists(FILE_DIRECTORY):
-    os.makedirs(FILE_DIRECTORY)
-
-def handle_upload(client_socket, filepath, username):
-    try:
-        filename = os.path.basename(filepath)
-        dest_path = os.path.join(FILE_DIRECTORY, filename)
-
-        with open(filepath, "rb") as src_file, open(dest_path, "wb") as dest_file:
-            while (data := src_file.read(1024)):
-                dest_file.write(data)
-
-        client_socket.send(f"{current_time} {username} just uploaded '{filename}' to the server.".encode("utf-8"))
-        print(color_text(f"{current_time} {username} '{filename}' was received successfully.", "green"))
-    except Exception as e:
-        client_socket.send(f"Error uploading file: {str(e)}".encode("utf-8"))
-
-def handle_download(client_socket, filename, username):
-    try:
-        filepath = os.path.join(FILE_DIRECTORY, filename)
-        if not os.path.exists(filepath):
-            client_socket.send(f"Error: File '{filename}' not found.".encode("utf-8"))
-            return
-
-        client_socket.send(f"FILE_TRANSFER:{filename}:{os.path.getsize(filepath)}".encode("utf-8"))
-        print(color_text(f"Sending '{filename}' to {username}.", "yellow"))
-
-        with open(filepath, "rb") as file:
-            while (data := file.read(1024)):
-                client_socket.send(data)
-
-#        client_socket.send(b"\nFILE_TRANSFER_COMPLETE\n") Handled on client side
-        print(color_text(f"File '{filename}' was sent successfully to {username}.", "green"))
-    except Exception as e:
-        client_socket.send(f"Error downloading file: {str(e)}".encode("utf-8"))
-
-def handle_list_files(client_socket):
-    try:
-        files = os.listdir(FILE_DIRECTORY)  # Get list of files in the directory
-        if not files:
-            client_socket.send(b"No files have been uploaded yet.")
-        else:
-            file_list = "\n".join(files)  # Convert list to string with newlines
-            client_socket.send(f" {files}".encode("utf-8"))
-    except Exception as e:
-        client_socket.send(f"Error retrieving file list: {str(e)}".encode("utf-8"))
-
+# --- Utility Functions ---
+def get_current_time():
+    """Returns the current time formatted as HH:MM:SS"""
+    return datetime.datetime.now().strftime("%X")
 
 def color_text(text, color):
-    return f"{fg(color)}{text}{attr('reset')}"
+    """Applies color codes for server console output. Handles potential invalid colors."""
+    try:
+        valid_colors = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+                        'dark_gray', 'light_red', 'light_green', 'light_yellow', 'light_blue',
+                        'light_magenta', 'light_cyan']
+        if color in valid_colors or (isinstance(color, int) and 0 <= color <= 255):
+            return f"{fg(color)}{text}{attr('reset')}"
+        else:
+            print(f"[Color Warning] Unrecognized color '{color}' used. Falling back to white.")
+            return f"{fg('white')}{text}{attr('reset')}"
+    except Exception as e:
+        print(f"[Color Error] Error applying color '{color}': {e}. Falling back to plain text.")
+        return text
 
-# Load or Create User Credentials
+def format_for_client(message, prefix="[Server]"):
+    """Formats messages for sending to the client (no color)."""
+    message_str = str(message) if not isinstance(message, str) else message
+    current_time_str = datetime.datetime.now().strftime("%X")
+    return f"{current_time_str} {prefix} {message_str}"
+
+# --- File Handling ---
+if not os.path.exists(FILE_DIRECTORY):
+    try:
+        os.makedirs(FILE_DIRECTORY)
+        print(color_text(f"{get_current_time()} [Info] Created base file directory: {FILE_DIRECTORY}", "yellow"))
+    except OSError as e:
+        print(color_text(f"{get_current_time()} [FATAL ERROR] Could not create file directory '{FILE_DIRECTORY}': {e}", "red"))
+        sys.exit(1)
+
+# !!! IMPORTANT NOTE ON UPLOAD SECURITY !!!
+# The current handle_upload assumes the path provided by the client
+# is a valid *server-side* path. This is generally NOT what you want
+# for client uploads and is a security risk.
+# THIS FUNCTION COPIES A FILE FROM ONE LOCATION ON THE SERVER TO ANOTHER.
+# IT DOES NOT RECEIVE FILE DATA FROM THE CLIENT.
+def handle_upload(client_socket, filepath, username):
+    """Handles file 'upload' (copying from server path) to user's directory."""
+    user_dir = os.path.join(FILE_DIRECTORY, username)
+    try:
+        os.makedirs(user_dir, exist_ok=True)
+
+        # This check looks for the file ON THE SERVER where this script runs.
+        if not os.path.exists(filepath):
+            # This error is sent if the file path (e.g., /home/nakildias/test.7z) is not found ON THE SERVER.
+            client_socket.send(format_for_client(f"Source file '{os.path.basename(filepath)}' not found on server.", "[Error]").encode("utf-8"))
+            # This is the error log you are seeing.
+            print(color_text(f"{get_current_time()} [Upload Error] {username} requested non-existent source file: {filepath}", "red"))
+            return
+
+        if not os.path.isfile(filepath):
+            client_socket.send(format_for_client(f"Source path '{os.path.basename(filepath)}' is not a file.", "[Error]").encode("utf-8"))
+            print(color_text(f"{get_current_time()} [Upload Error] {username} requested source path is not a file: {filepath}", "red"))
+            return
+
+        filename = os.path.basename(filepath)
+        dest_path = os.path.join(user_dir, filename)
+
+        invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+        if ".." in filename or any(char in filename for char in invalid_chars):
+            client_socket.send(format_for_client("Invalid filename provided.", "[Error]").encode("utf-8"))
+            print(color_text(f"{get_current_time()} [Upload Error] {username} attempted invalid filename: {filename}", "red"))
+            return
+
+        if os.path.exists(dest_path):
+            client_socket.send(format_for_client(f"File '{filename}' already exists in your server directory. Upload failed.", "[Error]").encode("utf-8"))
+            print(color_text(f"{get_current_time()} [Upload Error] {username} attempted to overwrite existing file: {filename}", "yellow"))
+            return
+
+        # This copies the file *on the server*.
+        copied_bytes = 0
+        with open(filepath, "rb") as src_file, open(dest_path, "wb") as dest_file:
+            while (data := src_file.read(4096)):
+                dest_file.write(data)
+                copied_bytes += len(data)
+
+        client_socket.send(format_for_client(f"File '{filename}' uploaded successfully to your server directory.", "[Info]").encode("utf-8"))
+        broadcast(format_for_client(f"{username} uploaded a file.", "[Info]"), None)
+        print(color_text(f"{get_current_time()} [Upload] {username} uploaded '{filename}' ({copied_bytes} bytes) successfully.", "green"))
+
+    except PermissionError as e:
+        client_socket.send(format_for_client(f"Server permission error during upload.", "[Error]").encode("utf-8"))
+        print(color_text(f"{get_current_time()} [Upload Error] Permission denied for {username} ({filepath}): {str(e)}", "red"))
+    except Exception as e:
+        client_socket.send(format_for_client(f"Error uploading file: Check server logs.", "[Error]").encode("utf-8"))
+        print(color_text(f"{get_current_time()} [Upload Error] Failed for {username} ({filepath}): {str(e)}", "red"))
+
+
+def handle_download(client_socket, target_username, filename, requestor_username):
+    """Handles sending a file from a user's directory to the requestor."""
+    user_dir = os.path.join(FILE_DIRECTORY, target_username)
+    filepath = os.path.join(user_dir, filename)
+
+    invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    if ".." in filename or any(char in filename for char in invalid_chars):
+        client_socket.send(format_for_client("Invalid filename requested.", "[Error]").encode("utf-8"))
+        print(color_text(f"{get_current_time()} [Download Error] {requestor_username} attempted invalid filename: {filename}", "red"))
+        return
+
+    try:
+        abs_user_dir = os.path.abspath(user_dir)
+        abs_filepath = os.path.abspath(filepath)
+
+        if not abs_filepath.startswith(abs_user_dir):
+            client_socket.send(format_for_client(f"Error: File access denied.", "[Error]").encode("utf-8"))
+            print(color_text(f"{get_current_time()} [Download Error] {requestor_username} attempted directory traversal: {filename}", "red"))
+            return
+
+        if not os.path.exists(filepath) or not os.path.isfile(filepath):
+            client_socket.send(format_for_client(f"Error: File '{filename}' not found in {target_username}'s directory.", "[Error]").encode("utf-8"))
+            print(color_text(f"{get_current_time()} [Download Error] {requestor_username} requested non-existent file: {target_username}/{filename}", "yellow"))
+            return
+
+        file_size = os.path.getsize(filepath)
+        header = f"FILE_TRANSFER:{filename}:{file_size}"
+        client_socket.send(header.encode("utf-8"))
+        print(color_text(f"{get_current_time()} [Download] Sending '{filename}' ({file_size} bytes) from {target_username} to {requestor_username}.", "yellow"))
+
+        time.sleep(0.1)
+
+        bytes_sent = 0
+        with open(filepath, "rb") as file:
+            while True:
+                data = file.read(4096)
+                if not data:
+                    break
+                client_socket.sendall(data)
+                bytes_sent += len(data)
+
+        print(color_text(f"{get_current_time()} [Download] File '{filename}' ({bytes_sent} bytes) sent successfully to {requestor_username}.", "green"))
+
+    except FileNotFoundError:
+        client_socket.send(format_for_client(f"Error: File '{filename}' not found during read.", "[Error]").encode("utf-8"))
+        print(color_text(f"{get_current_time()} [Download Error] File disappeared during download?: {target_username}/{filename}", "red"))
+    except ConnectionAbortedError:
+        print(color_text(f"{get_current_time()} [Download Info] Connection aborted by {requestor_username} during download of {filename}.", "yellow"))
+    except ConnectionResetError:
+        print(color_text(f"{get_current_time()} [Download Info] Connection reset by {requestor_username} during download of {filename}.", "yellow"))
+    except Exception as e:
+        client_socket.send(format_for_client(f"Error downloading file. Check server logs.", "[Error]").encode("utf-8"))
+        print(color_text(f"{get_current_time()} [Download Error] Failed sending {filename} to {requestor_username}: {str(e)}", "red"))
+
+def handle_list_files(client_socket, target_username, requestor_username):
+    """Lists files in the specified user's upload directory and sends them back in FILE_LIST format."""
+    user_dir = os.path.join(FILE_DIRECTORY, target_username)
+    file_list_message_prefix = f"FILE_LIST:{target_username}:"
+    files_str = ""
+
+    try:
+        if not os.path.exists(user_dir) or not os.path.isdir(user_dir):
+            client_socket.send(file_list_message_prefix.encode("utf-8"))
+            print(color_text(f"{get_current_time()} [Files] Directory not found for {target_username}, requested by {requestor_username}. Sent empty list.", "yellow"))
+            return
+
+        files = [f for f in os.listdir(user_dir) if os.path.isfile(os.path.join(user_dir, f)) and f]
+
+        if not files:
+            client_socket.send(file_list_message_prefix.encode("utf-8"))
+            print(color_text(f"{get_current_time()} [Files] No files found for {target_username}, requested by {requestor_username}. Sent empty list.", "yellow"))
+        else:
+            files_str = ";".join(files)
+            full_message = file_list_message_prefix + files_str
+            client_socket.send(full_message.encode("utf-8"))
+            print(color_text(f"{get_current_time()} [Files] Sent file list for {target_username} to {requestor_username} ({len(files)} files).", "green"))
+
+    except PermissionError as e:
+        error_msg = format_for_client(f"Server permission error listing files for {target_username}.", "[Error]")
+        client_socket.send(error_msg.encode("utf-8"))
+        print(color_text(f"{get_current_time()} [Files Error] Permission denied listing for {target_username} (requested by {requestor_username}): {str(e)}", "red"))
+    except Exception as e:
+        error_msg = format_for_client(f"Error retrieving file list for {target_username}. Check server logs.", "[Error]")
+        client_socket.send(error_msg.encode("utf-8"))
+        print(color_text(f"{get_current_time()} [Files Error] Failed listing for {target_username} (requested by {requestor_username}): {str(e)}", "red"))
+
+# --- NEW: File Deletion Handling ---
+def handle_delete_file(client_socket, username, command_parts):
+    """Handles a request to delete a file."""
+    global ops # Access global ops list
+    is_op = False
+    with lock: # Check OP status safely
+        is_op = username in ops
+
+    # --- Case 1: /delete <filename> (Delete own file) ---
+    if len(command_parts) == 2:
+        filename = command_parts[1]
+        target_user = username # User wants to delete their own file
+        print_prefix = f"[Delete Own]"
+    # --- Case 2: /delete <target_user> <filename> (OP deletes other's file) ---
+    elif len(command_parts) == 3:
+        if not is_op:
+            client_socket.send(format_for_client("Permission denied. Only Operators can delete other users' files.", "[Error]").encode("utf-8"))
+            print(color_text(f"{get_current_time()} [Delete Attempt] Non-OP {username} tried to delete file from {command_parts[1]}", "red"))
+            return
+        target_user = command_parts[1]
+        filename = command_parts[2]
+        print_prefix = f"[Delete OP]"
+    # --- Invalid format ---
+    else:
+        usage = "Usage: /delete <filename>  OR  /delete <target_user> <filename> (Operator only)"
+        client_socket.send(format_for_client(usage, "[Usage]").encode("utf-8"))
+        return
+
+    # --- Validate filename ---
+    invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    if ".." in filename or any(char in filename for char in invalid_chars):
+        client_socket.send(format_for_client("Invalid filename provided.", "[Error]").encode("utf-8"))
+        print(color_text(f"{get_current_time()} {print_prefix} {username} attempted invalid filename: {filename}", "red"))
+        return
+
+    # --- Construct path and attempt deletion ---
+    user_dir = os.path.join(FILE_DIRECTORY, target_user)
+    filepath = os.path.join(user_dir, filename)
+    abs_user_dir = os.path.abspath(user_dir)
+    abs_filepath = os.path.abspath(filepath)
+
+    # Extra security check: Ensure path is within the intended user directory
+    if not abs_filepath.startswith(abs_user_dir):
+        client_socket.send(format_for_client("Error: File access denied (path violation).", "[Error]").encode("utf-8"))
+        print(color_text(f"{get_current_time()} {print_prefix} {username} attempted directory traversal delete: {filename}", "red"))
+        return
+
+    try:
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            os.remove(filepath)
+            success_msg = f"File '{filename}' deleted successfully"
+            if target_user != username: # Add context if OP deleted someone else's file
+                success_msg += f" from user '{target_user}'s directory"
+            success_msg += "."
+
+            client_socket.send(format_for_client(success_msg, "[Info]").encode("utf-8"))
+            print(color_text(f"{get_current_time()} {print_prefix} {username} deleted file '{target_user}/{filename}'.", "green"))
+            # Optionally notify the owner if an OP deleted their file (might be noisy)
+            # if is_op and target_user != username:
+            #     target_sock = find_socket_by_username(target_user)
+            #     if target_sock:
+            #         try:
+            #             target_sock.send(format_for_client(f"Operator '{username}' deleted your file: '{filename}'", "[Warning]").encode("utf-8"))
+            #         except: pass
+        else:
+            client_socket.send(format_for_client(f"Error: File '{filename}' not found in '{target_user}'s directory.", "[Error]").encode("utf-8"))
+            print(color_text(f"{get_current_time()} {print_prefix} {username} tried to delete non-existent file: {target_user}/{filename}", "yellow"))
+
+    except PermissionError:
+        client_socket.send(format_for_client(f"Server permission error deleting file '{filename}'.", "[Error]").encode("utf-8"))
+        print(color_text(f"{get_current_time()} {print_prefix} Permission denied deleting {target_user}/{filename} for {username}", "red"))
+    except Exception as e:
+        client_socket.send(format_for_client(f"Error deleting file '{filename}'. Check server logs.", "[Error]").encode("utf-8"))
+        print(color_text(f"{get_current_time()} {print_prefix} Failed deleting {target_user}/{filename} for {username}: {str(e)}", "red"))
+
+# --- Credentials and Ops Management ---
 def load_credentials():
     try:
         with open(USER_CREDENTIALS_FILE, "r") as f:
             return json.load(f)
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(color_text(f"{get_current_time()} [Info] Credentials file not found or invalid, starting fresh.", "yellow"))
         return {}
 
 def save_credentials(credentials):
-    with open(USER_CREDENTIALS_FILE, "w") as f:
-        json.dump(credentials, f)
+    try:
+        with lock:
+            with open(USER_CREDENTIALS_FILE, "w") as f:
+                json.dump(credentials, f, indent=4)
+    except IOError as e:
+        print(color_text(f"{get_current_time()} [Error] Could not save credentials file: {e}", "red"))
 
 def load_ops():
     try:
         with open(OPS_FILE, "r") as f:
             return json.load(f)
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
+        print(color_text(f"{get_current_time()} [Info] Ops file not found or invalid, starting with no operators.", "yellow"))
         return []
 
 def save_ops(ops):
-    with open(OPS_FILE, "w") as f:
-        json.dump(ops, f)
+    try:
+        with lock:
+            with open(OPS_FILE, "w") as f:
+                json.dump(ops, f, indent=4)
+    except IOError as e:
+        print(color_text(f"{get_current_time()} [Error] Could not save ops file: {e}", "red"))
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+# --- Global Variables ---
 user_credentials = load_credentials()
 ops = load_ops()
-clients = {}
+clients = {} # {client_socket: username}
+lock = threading.RLock() # RE-ENTRANT Lock for synchronizing access to shared resources
+server_socket = None # Will be initialized in server()
 
+# --- Client Handling Logic ---
 def handle_client(client_socket, username):
+    """Handles messages and commands from a single connected client."""
+    print(color_text(f"{get_current_time()} [Thread] Started handler thread for {username}.", "blue"))
     while True:
         try:
-            message = client_socket.recv(1024).decode("utf-8")
-            if not message:
+            message_bytes = client_socket.recv(2048)
+            if not message_bytes:
+                print(color_text(f"{get_current_time()} [Connection] Received empty data from {username}, assuming disconnect.", "yellow"))
                 break
+
+            try:
+                message = message_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                print(color_text(f"{get_current_time()} [Error] Received non-UTF8 data from {username}. Disconnecting.", "red"))
+                try: client_socket.send(format_for_client("Invalid data received. Disconnecting.", "[Error]").encode("utf-8"))
+                except: pass
+                break
+
             msg_content = message.strip()
+            if not msg_content: continue
 
-            # Command handling for file sharing
-            if msg_content.startswith("/upload "):
-                filename = msg_content.split(" ", 1)[1]
-                handle_upload(client_socket, filename, username)
-            elif msg_content.startswith("/download "):
-                filename = msg_content.split(" ", 1)[1]
-                handle_download(client_socket, filename, username)
-            elif msg_content == "/files":
-                handle_list_files(client_socket)
+            # --- Command Handling ---
+            if msg_content.startswith("/"):
+                command_parts = msg_content.split(" ", 2) # Split max 3 parts for OP commands etc.
+                # For upload/download, need potentially longer path. Let's adjust if needed
+                # For simple paths like /upload /path/file or /download user /path/file this split works.
+                # If paths have spaces AND aren't quoted, this split is ambiguous.
+                # However, for the user's example /upload /home/nakildias/test.7z, this works fine.
+                command = command_parts[0].lower()
+                print(color_text(f"{get_current_time()} [Command] {username} issued: {msg_content}", "magenta"))
 
-            # Command handling based on op status
-            elif msg_content.startswith("/kick ") or msg_content.startswith("/stop") or msg_content.startswith("/restart") or msg_content.startswith("/list" ):
-                # Ensure user is an operator
-                if username not in ops:
-                    client_socket.send(color_text("You do not have permission to execute this command.", "red").encode("utf-8"))
-                    continue  # Skip normal message processing if it's a restricted command
+                # == File Commands ==
+                if command == "/upload":
+                    # This part correctly parses the path if it doesn't contain spaces.
+                    if len(command_parts) < 2:
+                        # Need to reconstruct the full path argument if it contained spaces
+                        # but for the user's example `/upload /path/no/spaces`, command_parts[1] is correct.
+                        client_socket.send(format_for_client("Usage: /upload <server_source_filepath>", "[Usage]").encode("utf-8"))
+                    else:
+                        # For /upload /path/to/file this gets /path/to/file
+                        # For /upload "/path with space/file" this gets "/path
+                        # A better parser would be needed for quoted paths, but not changing per request.
+                        server_source_path = msg_content.split(" ", 1)[1] # More robust way to get the rest of the string
+                        server_source_path = server_source_path.strip('"') # Basic quote stripping
 
-                # Handle the command if it's valid (forward to command handler function)
-                handle_server_command(client_socket, username, msg_content)
-                continue  # Skip the normal message handling to avoid broadcast
+                        # !!! THIS IS THE PROBLEM AREA !!!
+                        # This calls handle_upload, which expects server_source_path to be ON THE SERVER.
+                        # It DOES NOT implement client-to-server upload.
+                        print(color_text(f"{get_current_time()} [Debug] Calling handle_upload with server_source_path='{server_source_path}'", "dark_gray"))
+                        handle_upload(client_socket, server_source_path, username)
 
-            # If it's not a command, handle it as a normal chat message
-            if len(msg_content) < 1:
-                client_socket.send(b"Error: Message must be at least 1 character long.\n")
-            elif len(msg_content) > 150:
-                print(f"{username} sent a message that is too long: {len(msg_content)}")
-                client_socket.send(b"Error: Message cannot exceed 150 characters.\n")
-            elif msg_content.startswith("/"):
-                continue
+                elif command == "/download":
+                    if len(command_parts) < 3:
+                         # This split might fail if filename contains spaces. Requires quotes or different parsing.
+                         # For `/download user filename`, this works.
+                        client_socket.send(format_for_client("Usage: /download <username> <filename>", "[Usage]").encode("utf-8"))
+                    else:
+                        target_user = command_parts[1]
+                        # Reconstruct filename potentially containing spaces
+                        filename_parts = msg_content.split(" ", 2)
+                        filename = filename_parts[2].strip('"') # Basic quote stripping
+                        handle_download(client_socket, target_user, filename, username)
+
+                elif command == "/files":
+                    if len(command_parts) < 2:
+                        client_socket.send(format_for_client("Usage: /files <username>", "[Usage]").encode("utf-8"))
+                    else:
+                        target_user = command_parts[1]
+                        handle_list_files(client_socket, target_user, username)
+
+                # --- NEW: Delete Command ---
+                elif command == "/delete":
+                    # Pass the whole parts list to the handler
+                    # The handler needs adjusting if filenames have spaces and quotes aren't handled robustly.
+                    handle_delete_file(client_socket, username, command_parts) # Assumes split(" ", 2) is sufficient.
+                # --- End Delete Command ---
+
+                # == Operator Commands ==
+                elif command in ["/kick", "/stop", "/restart", "/listops", "/op", "/deop"]:
+                    with lock:
+                        is_op = username in ops
+                    if not is_op:
+                        client_socket.send(format_for_client("You do not have permission to execute this command.", "[Error]").encode("utf-8"))
+                    else:
+                        # Pass the raw message content for more flexible parsing inside
+                        handle_server_command(client_socket, username, msg_content)
+
+                # == General Commands ==
+                elif command == "/list":
+                    with lock:
+                        user_list_sorted = sorted(list(clients.values()))
+                        user_list_str = ", ".join(user_list_sorted)
+                        num_users = len(clients)
+                    client_socket.send(format_for_client(f"Connected users ({num_users}): {user_list_str}", "[Users]").encode("utf-8"))
+
+                elif command == "/help":
+                    # --- UPDATED Help Text ---
+                    help_text = """
+Available Commands:
+  /help             Show this help message
+  /list             List connected users
+  /files <username> List files uploaded by a user
+  /upload <path>    Upload a file (CURRENTLY COPIES FROM *SERVER* PATH - DOES NOT WORK FOR CLIENT UPLOAD)
+  /download <user> <fn> Download a file from a user
+  /delete <filename>    Delete one of your uploaded files
+  /exit             Disconnect from the server
+
+Operator Commands (require OP status):
+  /kick <user> [reason] Kick a user
+  /op <username>        Make a registered user an operator
+  /deop <username>      Remove operator status from a user
+  /listops            List current server operators
+  /delete <user> <fn>   Delete a file from specified user (OP Only)
+  /stop               Stop the server (console only recommended)
+  /restart            Restart the server (console only recommended)
+"""
+                    client_socket.send(help_text.encode("utf-8")) # Send raw help text
+
+                elif command == "/exit":
+                    print(color_text(f"{get_current_time()} [Connection] {username} sent /exit command.", "yellow"))
+                    break
+
+                else:
+                    client_socket.send(format_for_client(f"Unknown command: {command}", "[Error]").encode("utf-8"))
+
+            # --- Regular Message Handling ---
             else:
-                formatted_msg = f"{current_time} [{color_text(username, 'cyan')}]: {msg_content}"
-                print(formatted_msg)
-                broadcast(formatted_msg, client_socket)
+                if len(msg_content) > 512:
+                    print(color_text(f"{get_current_time()} {username} sent a message that is too long: {len(msg_content)} chars", "yellow"))
+                    client_socket.send(format_for_client("Message cannot exceed 512 characters.", "[Error]").encode("utf-8"))
+                    continue
+
+                formatted_print_msg = f"{get_current_time()} [{color_text(username, 'cyan')}]: {msg_content}"
+                print(formatted_print_msg) # Print to SERVER console with color
+
+                formatted_broadcast_msg = format_for_client(f"{msg_content}", f"[{username}]")
+                broadcast(formatted_broadcast_msg, client_socket) # Send to OTHER clients without color
+
+        except ConnectionResetError:
+            print(color_text(f"{get_current_time()} [Connection] Connection reset by {username}.", "yellow"))
+            break
+        except ConnectionAbortedError:
+            print(color_text(f"{get_current_time()} [Connection] Connection aborted for {username}.", "yellow"))
+            break
+        except socket.timeout:
+            print(color_text(f"{get_current_time()} [Connection] Socket timeout for {username}.", "yellow"))
+            break
+        except OSError as e:
+            print(color_text(f"{get_current_time()} [Socket Error] OSError for {username}: {e}", "red"))
+            break
         except Exception as e:
-            print(f"Error handling client {username}: {e}")
+            print(color_text(f"{get_current_time()} [Error] Unexpected error handling client {username}: {e}", "red"))
+            try:
+                client_socket.send(format_for_client("An internal server error occurred.", "[Error]").encode("utf-8"))
+            except: pass
             break
 
-    print(color_text(f"{username} disconnected.", "red"))
-    client_socket.close()
-    clients.pop(client_socket, None)
-    broadcast(color_text(f"{current_time} {username} has left the chat.", "yellow"), None)
+    # --- Disconnection Cleanup ---
+    disconnected_user = None
+    with lock:
+        if client_socket in clients:
+            disconnected_user = clients.pop(client_socket, None)
 
-def handle_server_command(client_socket, username, message):
-    if message.startswith("/kick "):
-        parts = message.split(" ", 2)
-        if len(parts) < 3:
-            client_socket.send(color_text("Usage: /kick <username> <reason>", "red").encode("utf-8"))
-            return
-        target_user, reason = parts[1], parts[2]
-        # Implement the kicking logic here
-        for client, user in list(clients.items()):
-            if user == target_user:
-                client.send(color_text(f"{current_time} You have been kicked: {reason}", "red").encode("utf-8"))
-                client.shutdown(socket.SHUT_RDWR)  # Shutdown both reading and writing
-                client.close()  # Now close the socket
-                del clients[client]
-                broadcast(color_text(f"{current_time} {target_user} was kicked: {reason}", "yellow"), None)
-                print(color_text(f"{current_time} Kicked {target_user}: {reason}", "red"))
+    if disconnected_user:
+        print(color_text(f"{get_current_time()} [Disconnect] {disconnected_user} disconnected.", "red"))
+        broadcast(format_for_client(f"{disconnected_user} has left the chat.", "[Info]"), None)
+    else:
+         print(color_text(f"{get_current_time()} [Disconnect] A client disconnected but wasn't found in the active list (possibly during login).", "yellow"))
+
+    try:
+        print(color_text(f"{get_current_time()} [Thread] Closing socket for {username if disconnected_user else 'unknown client'}.", "blue"))
+        client_socket.shutdown(socket.SHUT_RDWR)
+        client_socket.close()
+        print(color_text(f"{get_current_time()} [Thread] Socket closed for {username if disconnected_user else 'unknown client'}.", "blue"))
+    except OSError as e:
+        # This can happen if the socket was already closed by the other side or forcibly closed (e.g., kick)
+        print(color_text(f"{get_current_time()} [Thread] Info: Non-critical error closing socket for {username if disconnected_user else 'unknown client'}: {e}", "blue"))
+    except Exception as e:
+         print(color_text(f"{get_current_time()} [Thread Error] Error closing socket for {username if disconnected_user else 'unknown client'}: {e}", "red"))
+
+    print(color_text(f"{get_current_time()} [Thread] Handler thread finished for {username if disconnected_user else 'disconnected client'}.", "blue"))
+
+
+def handle_server_command(client_socket, issuer_username, message):
+    """Handles commands that require operator privileges."""
+    global ops, user_credentials # Ensure access to globals
+    parts = message.split(" ", 2) # Split potentially including reason/filename
+    command = parts[0].lower()
+    kick_success = False # Flag specific to kick command
+    broadcast_msg = ""   # Broadcast message specific to kick command
+    op_changed = False   # Flag for op/deop success
+    op_change_msg = "" # Message for op/deop issuer
+    notify_target_sock = None # Socket of the user being opped/deopped
+    notify_target_msg = "" # Message for the user being opped/deopped
+    log_msg = ""           # Message for server log
+    target_user = ""     # Define target_user outside conditional blocks
+
+    # Use lock for commands modifying shared state (clients, ops, user_credentials read)
+    with lock:
+        if command == "/kick":
+            # --- KICK LOGIC ---
+            if len(parts) < 2:
+                client_socket.send(format_for_client("Usage: /kick <username> [reason]", "[Usage]").encode("utf-8"))
                 return
-        client_socket.send(color_text("User not found.", "red").encode("utf-8"))
 
-    elif message == "/stop":
-        # Implement the server stop logic here
-        print(color_text("Stopping server...", "red"))
-        for client in list(clients.keys()):
-            client.send(color_text(f"{current_time} Connection lost. Reason: (Server stopped)\n", "red").encode("utf-8"))
-            client.shutdown(socket.SHUT_RDWR)
-            client.close()
-        server_socket.close()  # Properly close the server socket
-        os._exit(0)
+            target_user = parts[1]
+            reason = parts[2] if len(parts) > 2 else "No reason specified."
 
-    elif message == "/restart":
-        # Implement the server restart logic here
-        print(color_text("Restarting server...", "red"))
-        for client in list(clients.keys()):
-            client.send(color_text(f"{current_time} Connection lost. Reason: (Server is restarting...)\n", "red").encode("utf-8"))
-            client.shutdown(socket.SHUT_RDWR)
-            client.close()
-        server_socket.close()  # Properly close the server socket
-        os.execv(sys.executable, [sys.executable] + sys.argv)  # Start the server back up
+            if target_user == issuer_username:
+                client_socket.send(format_for_client("You cannot kick yourself.", "[Error]").encode("utf-8"))
+                return
 
-    elif message == "/list":
-        # Implement the server list logic here
-            print(color_text(f"{current_time} {username} issued /list", "yellow"))
-#            client_socket.send(color_text(f" Connected Users:", "red").encode("utf-8"))
-            for user in clients.values():
-                client_socket.send(color_text(f" [{user}] ", "red").encode("utf-8"))
-#            client_socket.send(b"\n")  # Add a newline after the list is sent
+            target_socket = None
+            for sock, user in clients.items():
+                if user == target_user:
+                    target_socket = sock
+                    break
+
+            if target_socket:
+                kick_message = format_for_client(f"You have been kicked by {issuer_username}. Reason: {reason}", "[Kick]")
+                try:
+                    target_socket.send(kick_message.encode("utf-8"))
+                    # Shutdown might fail if client already gone, handle gracefully
+                    target_socket.shutdown(socket.SHUT_RDWR)
+                except OSError as e:
+                    print(color_text(f"{get_current_time()} [Kick Error] Error sending kick/shutting down socket for {target_user}: {e}", "red"))
+                except Exception as e:
+                    print(color_text(f"{get_current_time()} [Kick Error] Unexpected error during kick socket handling for {target_user}: {e}", "red"))
+                finally:
+                    # Ensure removal happens even if send/shutdown fails
+                    clients.pop(target_socket, None) # Use pop with default None
+                    try:
+                        target_socket.close() # Attempt close as well
+                    except: pass # Ignore errors closing already potentially broken socket
+
+                kick_success = True # Set kick flag
+                broadcast_msg = format_for_client(f"{target_user} was kicked by {issuer_username}. Reason: {reason}", "[Info]")
+                log_msg = f"[Kick] {issuer_username} kicked {target_user}. Reason: {reason}" # Log message for outside lock
+
+            else: # Target user not found
+                client_socket.send(format_for_client(f"User '{target_user}' not found online.", "[Error]").encode("utf-8"))
+                kick_success = False
+            # --- END KICK LOGIC ---
+
+        # --- NEW: OP LOGIC ---
+        elif command == "/op":
+            if len(parts) != 2:
+                op_change_msg = format_for_client("Usage: /op <username>", "[Usage]")
+            else:
+                target_user = parts[1]
+                if target_user == issuer_username:
+                    op_change_msg = format_for_client("You cannot op yourself.", "[Error]")
+                elif target_user not in user_credentials:
+                    op_change_msg = format_for_client(f"User '{target_user}' does not exist (must be registered).", "[Error]")
+                elif target_user in ops:
+                    op_change_msg = format_for_client(f"User '{target_user}' is already an operator.", "[Info]")
+                else:
+                    ops.append(target_user)
+                    save_ops(ops) # Save the updated list
+                    op_changed = True
+                    op_change_msg = format_for_client(f"User '{target_user}' is now an operator.", "[Info]")
+                    log_msg = f"[OP] {issuer_username} opped {target_user}."
+                    notify_target_msg = format_for_client(f"You have been promoted to Operator by {issuer_username}.", "[Info]")
+                    # Find the target socket to notify (if online)
+                    for sock, user in clients.items():
+                        if user == target_user:
+                            notify_target_sock = sock
+                            break
+        # --- END OP LOGIC ---
+
+        # --- NEW: DEOP LOGIC ---
+        elif command == "/deop":
+            if len(parts) != 2:
+                op_change_msg = format_for_client("Usage: /deop <username>", "[Usage]")
+            else:
+                target_user = parts[1]
+                if target_user == issuer_username:
+                    op_change_msg = format_for_client("You cannot deop yourself.", "[Error]")
+                elif target_user not in ops:
+                    op_change_msg = format_for_client(f"User '{target_user}' is not an operator.", "[Error]")
+                else:
+                    try:
+                        ops.remove(target_user)
+                        save_ops(ops) # Save the updated list
+                        op_changed = True
+                        op_change_msg = format_for_client(f"User '{target_user}' is no longer an operator.", "[Info]")
+                        log_msg = f"[DEOP] {issuer_username} de-opped {target_user}."
+                        notify_target_msg = format_for_client(f"Your Operator status has been removed by {issuer_username}.", "[Info]")
+                        # Find the target socket to notify (if online)
+                        for sock, user in clients.items():
+                            if user == target_user:
+                                notify_target_sock = sock
+                                break
+                    except ValueError:
+                        # Should be rare because of the 'not in ops' check, but handle defensively
+                        op_change_msg = format_for_client(f"Error: Could not remove '{target_user}' from operators list (internal state mismatch?).", "[Error]")
+                        print(color_text(f"{get_current_time()} [DEOP Error] Attempted to remove {target_user} (requested by {issuer_username}), but they were not found in ops list during remove.", "red"))
+        # --- END DEOP LOGIC ---
+
+        elif command == "/listops":
+             # --- LISTOPS LOGIC (Existing) ---
+             op_list_sorted = sorted(ops)
+             op_list_str = ", ".join(op_list_sorted) if op_list_sorted else "No operators defined."
+             client_socket.send(format_for_client(f"Current Operators: {op_list_str}", "[Ops]").encode("utf-8"))
+             print(color_text(f"{get_current_time()} [Info] {issuer_username} listed operators.", "yellow"))
+             # --- END LISTOPS LOGIC ---
+
+        elif command == "/stop":
+             # --- STOP LOGIC (Existing) ---
+             print(color_text(f"{get_current_time()} [Shutdown] Server stop initiated by OP {issuer_username}.", "red"))
+             broadcast(format_for_client(f"Server is shutting down NOW! (Issued by {issuer_username})", "[Warning]"), None)
+             threading.Timer(0.5, shutdown_server).start()
+             # --- END STOP LOGIC ---
+
+        elif command == "/restart":
+             # --- RESTART LOGIC (Existing) ---
+             print(color_text(f"{get_current_time()} [Restart] Server restart initiated by OP {issuer_username}.", "red"))
+             broadcast(format_for_client(f"Server is restarting NOW! (Issued by {issuer_username})", "[Warning]"), None)
+             threading.Timer(0.5, restart_server).start()
+             # --- END RESTART LOGIC ---
+
+         # Note: No 'else' needed here as the command validity was checked in handle_client
+
+    # --- Actions performed outside the main lock ---
+
+    # Send kick broadcast message if kick was successful
+    if kick_success and broadcast_msg:
+        print(color_text(log_msg, "red")) # Log kick action
+        broadcast(broadcast_msg, None) # Inform everyone
+
+    # Send op/deop confirmation to issuer
+    if op_change_msg:
+        try:
+            client_socket.send(op_change_msg.encode("utf-8"))
+        except Exception as e:
+             print(color_text(f"{get_current_time()} [Error] Failed to send op/deop confirmation to {issuer_username}: {e}", "yellow"))
+
+    # Send notification to the target user if op/deop succeeded and they are online
+    if op_changed and notify_target_sock and notify_target_msg:
+        try:
+            notify_target_sock.send(notify_target_msg.encode("utf-8"))
+        except Exception as e:
+            # Need to access target_user variable here, ensure it's defined
+            # If op/deop logic ensures target_user is set when op_changed is True, this is fine.
+            print(color_text(f"{get_current_time()} [Info] Could not notify {target_user if target_user else 'target user'} of status change: {e}", "yellow"))
+
+
+    # Log op/deop action if successful
+    if op_changed and log_msg:
+         print(color_text(f"{get_current_time()} {log_msg}", "green" if command == "/op" else "yellow"))
+
 
 def broadcast(message, sender_socket):
-    for client in list(clients.keys()):
-        if client != sender_socket:
-            try:
-                client.send(message.encode("utf-8"))
-            except:
-                client.close()
-                del clients[client]
+    """Sends a message (already formatted, no color) to all clients except the sender."""
+    disconnected_sockets = []
+    with lock:
+        current_clients = list(clients.keys()) # Copy keys under lock
+
+    for client in current_clients:
+        if client == sender_socket: continue
+        try:
+            # Using sendall for potentially larger messages like broadcasts
+            client.sendall(message.encode("utf-8"))
+        except (ConnectionResetError, BrokenPipeError, OSError) as e:
+            # Common errors indicating client disconnected abruptly
+            print(color_text(f"{get_current_time()} [Broadcast Info] Client disconnected during broadcast: {e}. Marking for removal.", "yellow"))
+            disconnected_sockets.append(client)
+        except Exception as e:
+            # Log unexpected errors, but try to get username if possible (might fail if client gone)
+            client_username = "Unknown"
+            with lock: # Need lock briefly to check username if socket *might* still be in dict
+                client_username = clients.get(client, 'Unknown')
+            print(color_text(f"{get_current_time()} [Broadcast Error] Unexpected error sending to client {client_username}: {e}. Marking for removal.", "red"))
+            disconnected_sockets.append(client)
+
+    # Cleanup disconnected sockets outside the iteration loop
+    if disconnected_sockets:
+        print(color_text(f"{get_current_time()} [Broadcast Cleanup] Found {len(disconnected_sockets)} disconnected sockets during broadcast.", "blue"))
+        with lock:
+            for sock in disconnected_sockets:
+                if sock in clients: # Check if still exists before removing (e.g., handled by client thread already)
+                    disconnected_user = clients.pop(sock, 'Unknown')
+                    print(color_text(f"{get_current_time()} [Broadcast Cleanup] Removing disconnected client: {disconnected_user}", "yellow"))
+                    try: sock.close() # Close socket during cleanup
+                    except: pass # Ignore errors closing already broken socket
+                else:
+                    # Socket might have already been removed by its handler thread, just try closing
+                    try: sock.close()
+                    except: pass
+
 
 def handle_login(client_socket, addr):
-    client_socket.send(b"Enter server password: ")
-    server_password = client_socket.recv(1024).decode("utf-8").strip()
-    if server_password != SERVER_PASSWORD:
-        client_socket.send(color_text("Connection lost. Reason: (Wrong Password)\n", "red").encode("utf-8"))
-        client_socket.close()
-        return
-
-    client_socket.send(b"Enter your username: ")
+    """Handles the initial connection, authentication, and registration process."""
+    username = None
+    login_successful = False
+    print(color_text(f"{get_current_time()} [Auth] Connection attempt from {addr}", "blue"))
     try:
-        client_socket.settimeout(60)
-        username = client_socket.recv(1024).decode("utf-8").strip()
+        client_socket.send(b"Enter server password: ")
+        client_socket.settimeout(30) # 30 second timeout for server password
+        server_password_attempt = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
 
-        if len(username) > 18:
-            client_socket.send(color_text("Connection lost. Reason: (Username is over 18 characters)\n", "red").encode("utf-8"))
-            client_socket.close()
-            return
-        if " " in username:
-            client_socket.send(color_text("Connection lost. Reason: (No spaces allowed in usernames)\n", "red").encode("utf-8"))
-            client_socket.close()
-            return
-        if username in clients.values():
-            client_socket.send(color_text("Connection lost. Reason: (You are already connected)\n", "red").encode("utf-8"))
-            client_socket.close()
+        if server_password_attempt != SERVER_PASSWORD:
+            client_socket.send("Incorrect server password.\n".encode("utf-8")) # Added newline
+            print(color_text(f"{get_current_time()} [Auth] Failed server password attempt from {addr}", "yellow"))
+            client_socket.settimeout(None) # Reset timeout before returning
             return
 
-        client_socket.send(b"Enter your password: ")
-        password = client_socket.recv(1024).decode("utf-8").strip()
-        client_socket.settimeout(None)
+        client_socket.send("Server password OK. Enter username: ".encode("utf-8"))
+        client_socket.settimeout(60) # Allow more time for username/password entry
+        username = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
+
+        # Allow slightly more flexible usernames (alphanumeric + underscore/hyphen)
+        is_valid_username = (username and 1 <= len(username) <= 18 and
+                             " " not in username and
+                             all(c.isalnum() or c in ['_', '-'] for c in username))
+
+        if not is_valid_username:
+            client_socket.send("Username invalid (1-18 chars, alphanumeric, _, -).\n".encode("utf-8")) # Added newline
+            print(color_text(f"{get_current_time()} [Auth] Invalid username attempt from {addr}: '{username}'", "yellow"))
+            client_socket.settimeout(None) # Reset timeout
+            return
+
+        # Check if user exists or is already logged in within the lock
+        with lock:
+            if username in clients.values():
+                client_socket.send("Username already logged in.\n".encode("utf-8")) # Added newline
+                print(color_text(f"{get_current_time()} [Auth] Duplicate login attempt from {addr} for user: '{username}'", "yellow"))
+                client_socket.settimeout(None) # Reset timeout
+                return
+            user_exists = username in user_credentials
+
+        if not user_exists:
+            # Reject users not in the credentials file. Registration is not handled here.
+            client_socket.send("Username rejected or does not exist.\n".encode("utf-8")) # Added newline
+            print(color_text(f"{get_current_time()} [Auth] Non-existent user login attempt from {addr}: '{username}'", "yellow"))
+            client_socket.settimeout(None) # Reset timeout
+            return
+
+        # User exists, prompt for password
+        client_socket.send("Username OK. Enter password: ".encode("utf-8"))
+        # Timeout still 60 seconds from username prompt
+        password = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
+        client_socket.settimeout(None) # Reset timeout after receiving password
+
+        hashed_password = hash_password(password)
+
+        with lock:
+            correct_password = user_credentials.get(username) == hashed_password
+
+        if not correct_password:
+            client_socket.send("Incorrect password.\n".encode("utf-8")) # Added newline
+            print(color_text(f"{get_current_time()} [Auth] Failed password for user {username} from {addr}", "yellow"))
+            return
+
+        # --- Login Successful ---
+        login_successful = True
+        client_socket.send("Login successful.\n".encode("utf-8")) # Added newline
+
+        with lock:
+            clients[client_socket] = username
+        print(color_text(f"{get_current_time()} [Connect] {username} joined from {addr}.", "cyan"))
+
+        welcome_msg = format_for_client(f"Welcome to {SERVER_NAME}, {username}!", "[Welcome]") + "\n" # Add newline client side
+        client_socket.send(welcome_msg.encode("utf-8"))
+
+        with lock:
+            is_op = username in ops
+        if is_op:
+            client_socket.send(format_for_client("You are logged in as an Operator.", "[Info]").encode("utf-8") + b"\n")
+
+        join_msg = format_for_client(f"{username} has joined the chat!", "[Info]")
+        # time.sleep(0.1) # Optional small delay - Usually not needed
+        broadcast(join_msg, client_socket)
+
+        # Start the dedicated handler thread for this client
+        client_thread = threading.Thread(target=handle_client, args=(client_socket, username), name=f"Client-{username}")
+        client_thread.daemon = True
+        client_thread.start()
+
     except socket.timeout:
-        client_socket.send(color_text("Connection lost. Reason: (Login Timeout)\n", "red").encode("utf-8"))
-        client_socket.close()
-        return
-
-    hashed_password = hash_password(password)
-
-    if username in user_credentials:
-        if user_credentials[username] != hashed_password:
-            client_socket.send(color_text("Connection lost. Reason: (Wrong Password)\n", "red").encode("utf-8"))
-            client_socket.close()
-            return
-    else:
-        user_credentials[username] = hashed_password
-        save_credentials(user_credentials)
-
-    clients[client_socket] = username
-    print(color_text(f"{current_time} {username} joined from {addr}", "cyan"))
-    broadcast(color_text(f"{current_time} {username} has joined the chat!", "green"), None)
-
-    client_thread = threading.Thread(target=handle_client, args=(client_socket, username))
-    client_thread.start()
-
-def console_commands():
-    while True:
-        command = input()
-        if command.startswith("/kick "):
-            parts = command.split(" ", 2)
-            if len(parts) < 3:
-                print("Usage: /kick <username> <reason>")
-                continue
-            username, reason = parts[1], parts[2]
-            for client, user in list(clients.items()):
-                if user == username:
-                    client.send(color_text(f"{current_time} You have been kicked: {reason}", "red").encode("utf-8"))
-                    client.shutdown(socket.SHUT_RDWR)  # Shutdown both reading and writing
-                    client.close()  # Now close the socket
-                    del clients[client]
-                    broadcast(color_text(f"{current_time} {username} was kicked: {reason}", "yellow"), None)
-                    print(f"{current_time} Kicked {username}: {reason}")
-                    break
-            else:
-                print(color_text("User not found or not online", "red"))
-        elif command.startswith("/msg "):
-            message = command[5:]
-            broadcast(color_text(f"{current_time} [Server]: {message}", "green"), None)
-            print(f"{current_time} [Server]: {message}")
-        elif command == "/list":
-            print("Connected Users:")
-            for user in clients.values():
-                print(f"- {user}")
-        elif command == "/stop":
-            print(color_text("Stopping server...", "red"))
-            for client in list(clients.keys()):
-                client.send(color_text("Connection lost. Reason: (Server stopped)\n", "red").encode("utf-8"))
-                client.shutdown(socket.SHUT_RDWR)
-                client.close()
-            server_socket.close()  # Properly close the server socket
-            os._exit(0)
-        elif command == "/restart":
-            print(color_text(f"{current_time} Restarting server...", "red"))
-            for client in list(clients.keys()):
-                client.send(color_text(f"{current_time} Connection lost. Reason: (Server is restarting...)\n", "red").encode("utf-8"))
-                client.shutdown(socket.SHUT_RDWR)
-                client.close()
-            server_socket.close()  # Properly close the server socket
-            os.execv(sys.executable, [sys.executable] + sys.argv)  # Start the server back up
-        elif command.startswith("/op "):
-            parts = command.split(" ", 1)  # Split only into two parts: command and username
-            if len(parts) < 2 or not parts[1].strip():
-                print("Usage: /op <username>")
-                continue
-            username = parts[1].strip()
-            if username not in user_credentials:
-                print(f"User {username} does not exist.")
-                continue
-            if username in ops:
-                print(f"{username} is already an operator.")
-            else:
-                ops.append(username)
-                save_ops(ops)
-                print(f"{current_time} {username} is now an operator.")
-        elif command.startswith("/deop "):
-            parts = command.split(" ", 1)  # Split only into two parts: command and username
-            if len(parts) < 2 or not parts[1].strip():
-                print("Usage: /deop <username>")
-                continue
-            username = parts[1].strip()
-            if username not in ops:
-                print(f"{username} is not an operator.")
-            else:
-                ops.remove(username)
-                save_ops(ops)
-                print(f"{current_time} {username} is no longer an operator.")
-        elif command == "/help":
-            print("")
-            print("/list - List all connected clients")
-            print("")
-            print("/msg (message) - Send a message to all connected clients.")
-            print("")
-            print("/kick (username) (reason) - Kick a client from the server.")
-            print("")
-            print("/stop - Stop the server.")
-            print("")
-            print("/restart - Restart the server.")
-            print("")
-            print("/op <username> - Make a user an operator.")
-            print("")
-            print("/deop <username> - Remove a user from the operator list.")
-            print("")
-        else:
-            print("Unknown command.")
-
-
-def server():
-    global server_socket  # Make server_socket accessible globally
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((HOST, PORT))
-    server_socket.listen(5)
-    print(color_text(f"{current_time} Server started on {HOST}:{PORT}", "green"))
-    threading.Thread(target=console_commands, daemon=True).start()
-    try:
-        while True:
-            client_socket, addr = server_socket.accept()
-            login_thread = threading.Thread(target=handle_login, args=(client_socket, addr))
-            login_thread.start()
-    except KeyboardInterrupt:
-        print(color_text(f"{current_time} Stopping server...", "red"))
-        for client in list(clients.keys()):
+        print(color_text(f"{get_current_time()} [Auth] Login timeout from {addr}", "yellow"))
+        try: client_socket.send("Login timeout. Connection closed.\n".encode("utf-8")) # Added newline
+        except: pass
+    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as e:
+        print(color_text(f"{get_current_time()} [Auth] Connection lost during login from {addr}: {e}", "yellow"))
+    except Exception as e:
+        print(color_text(f"{get_current_time()} [Auth Error] Error during login from {addr}: {e}", "red"))
+        try: client_socket.send("An error occurred during login. Connection closed.\n".encode("utf-8")) # Added newline
+        except: pass
+    finally:
+        # Crucially, ensure the socket is closed if login failed *before* the handler thread was started
+        if not login_successful:
             try:
-                client.send(color_text(f"{current_time} Server shutting down. Connection lost.\n", "red").encode("utf-8"))
-                client.shutdown(socket.SHUT_RDWR)
-                client.close()
-            except:
-                pass
-        server_socket.shutdown(socket.SHUT_RDWR)
-        server_socket.close()
-        os._exit(0)
+                print(color_text(f"{get_current_time()} [Auth Cleanup] Closing socket for failed login from {addr}.", "blue"))
+                client_socket.close()
+            except: pass # Ignore errors closing already potentially closed socket
+
+# --- Shutdown/Restart/Console (Mostly Unchanged, Ensure Help Text Updated) ---
+
+def shutdown_server(exit_code=0):
+    """Gracefully shuts down the server."""
+    global server_socket, clients
+    print(color_text(f"{get_current_time()} [Shutdown] Shutting down server...", "red"))
+
+    # Grab client list and clear the global dict under lock
+    with lock:
+        client_sockets_to_close = list(clients.keys())
+        clients.clear() # Prevent new messages during shutdown
+
+    shutdown_message = format_for_client("Server is shutting down. Goodbye!", "[Warning]") + "\n" # Add newline
+    print(color_text(f"{get_current_time()} [Shutdown] Closing {len(client_sockets_to_close)} client socket(s)...", "yellow"))
+    for client in client_sockets_to_close:
+        try:
+            # Use a short timeout for sending the shutdown message
+            client.settimeout(0.5)
+            client.send(shutdown_message.encode("utf-8"))
+            client.settimeout(None) # Reset timeout
+            client.shutdown(socket.SHUT_RDWR) # Signal shutdown
+        except: pass # Ignore errors sending/shutting down (client might be gone)
+        finally:
+            try: client.close() # Ensure close is attempted
+            except: pass
+
+    # Close the main server socket
+    local_server_socket = server_socket # Copy reference
+    server_socket = None # Signal that the server socket is closing/closed
+    if local_server_socket:
+        try:
+            print(color_text(f"{get_current_time()} [Shutdown] Closing server socket.", "red"))
+            local_server_socket.close()
+        except Exception as e:
+            print(color_text(f"{get_current_time()} [Shutdown Error] Error closing server socket: {e}", "red"))
+
+    # Save state AFTER closing sockets
+    print(color_text(f"{get_current_time()} [Shutdown] Saving state...", "yellow"))
+    save_credentials(user_credentials) # Uses its own lock
+    save_ops(ops) # Uses its own lock
+
+    print(color_text(f"{get_current_time()} [Shutdown] Exiting.", "red"))
+    sys.exit(exit_code) # Use sys.exit for cleaner exit than os._exit
+
+def restart_server():
+    """Shuts down clients and restarts the server script."""
+    global server_socket, clients
+    print(color_text(f"{get_current_time()} [Restart] Restarting server...", "red"))
+
+    # Similar shutdown sequence as shutdown_server
+    with lock:
+        client_sockets_to_close = list(clients.keys())
+        clients.clear()
+
+    restart_message = format_for_client("Server is restarting. Please reconnect shortly.", "[Warning]") + "\n" # Add newline
+    print(color_text(f"{get_current_time()} [Restart] Closing {len(client_sockets_to_close)} client socket(s)...", "yellow"))
+    for client in client_sockets_to_close:
+        try:
+            client.settimeout(0.5)
+            client.send(restart_message.encode("utf-8"))
+            client.settimeout(None)
+            client.shutdown(socket.SHUT_RDWR)
+        except: pass
+        finally:
+            try: client.close()
+            except: pass
+
+    local_server_socket = server_socket
+    server_socket = None
+    if local_server_socket:
+        try:
+            print(color_text(f"{get_current_time()} [Restart] Closing server socket.", "red"))
+            local_server_socket.close()
+        except Exception as e:
+            print(color_text(f"{get_current_time()} [Restart Error] Error closing server socket: {e}", "red"))
+
+    print(color_text(f"{get_current_time()} [Restart] Saving state...", "yellow"))
+    save_credentials(user_credentials)
+    save_ops(ops)
+
+    print(color_text(f"{get_current_time()} [Restart] Executing restart...", "red"))
+    try:
+        # This replaces the current process with a new instance
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:
+        print(color_text(f"{get_current_time()} [Restart Error] Failed to execute restart: {e}", "red"))
+        os._exit(1) # Force exit if exec fails
+
+# --- Console Command Handling ---
+def console_commands():
+    """Handles commands entered directly into the server console."""
+    global ops, user_credentials
+    # Ensure initial messages are seen
+    print(color_text("Server console ready. Type /help for commands.", "magenta"), flush=True)
+    time.sleep(0.1) # Short delay helps ensure message appears after startup logs
+    print(color_text("[Console Thread] Started successfully. Waiting for input...", "blue"), flush=True)
+
+    while True:
+        # Reset flags/variables at the start of each loop iteration
+        broadcast_needed = False
+        broadcast_msg_console = ""
+        kick_success = False
+        broadcast_msg_kick = ""
+        deop_success = False
+        target_socket_deop = None # Reset socket reference for deop notification
+        target_socket_op = None # Reset socket reference for op notification
+
+        try:
+            # Prompt and read input
+            command_input = input("> ").strip()
+
+            if not command_input:
+                continue # Skip empty input
+
+            if not command_input.startswith('/'):
+                print(color_text("Console commands must start with /", "red"), flush=True)
+                continue
+
+            parts = command_input.split(" ", 2) # Split for commands like kick/op/deop
+            cmd = parts[0].lower()
+
+            # --- Handle each command type ---
+
+            if cmd == "/kick":
+                with lock: # Lock needed for clients dict modification and lookup
+                    if len(parts) < 2:
+                        print(color_text("Usage: /kick <username> [reason]", "red"), flush=True)
+                    else:
+                        username_to_kick = parts[1]
+                        reason = parts[2] if len(parts) > 2 else "Console Kick"
+                        target_socket = None
+                        for sock, user in clients.items():
+                            if user == username_to_kick:
+                                target_socket = sock
+                                break
+
+                        if target_socket:
+                            kick_message = format_for_client(f"You have been kicked by the Console. Reason: {reason}", "[Kick]") + "\n" # Add newline
+                            try:
+                                target_socket.sendall(kick_message.encode("utf-8"))
+                                target_socket.shutdown(socket.SHUT_RDWR)
+                            except OSError as e:
+                                print(color_text(f"[Kick Error] Couldn't send kick/shutdown socket for {username_to_kick}: {e}", "red"), flush=True)
+                            finally:
+                                # Remove under lock regardless of send error
+                                clients.pop(target_socket, None)
+                                try: target_socket.close()
+                                except: pass
+                            kick_success = True
+                            broadcast_msg_kick = format_for_client(f"{username_to_kick} was kicked by the Console. Reason: {reason}", "[Info]")
+                            print(color_text(f"[Kick] Kicked {username_to_kick} from console. Reason: {reason}", "red"), flush=True) # Console confirmation
+                        else:
+                            print(color_text(f"User '{username_to_kick}' not found or not online.", "red"), flush=True)
+                            kick_success = False
+                # Lock released
+
+            elif cmd == "/op":
+                if len(parts) < 2:
+                    print(color_text("Usage: /op <username>", "red"), flush=True)
+                else:
+                    username_to_op = parts[1]
+                    with lock: # Lock needed for ops list, user_credentials read, and clients lookup
+                        if username_to_op not in user_credentials:
+                            print(color_text(f"User '{username_to_op}' does not exist (must be registered).", "red"), flush=True)
+                        elif username_to_op in ops:
+                            print(color_text(f"{username_to_op} is already an operator.", "yellow"), flush=True)
+                        else:
+                            ops.append(username_to_op)
+                            # Save is done outside lock after checks
+                            print(color_text(f"{username_to_op} is now an operator.", "green"), flush=True) # Console confirmation
+                            # Find socket for notification *while holding lock*
+                            for sock, user in clients.items():
+                                if user == username_to_op:
+                                    target_socket_op = sock
+                                    break
+                            # Mark for saving outside lock
+                            op_needs_save = True
+                        # Lock released
+                    # Actions outside lock
+                    if 'op_needs_save' in locals() and op_needs_save:
+                         save_ops(ops) # Save the modified list
+                         if target_socket_op: # Check if socket was found
+                             try:
+                                 notify_msg = format_for_client("You have been promoted to Operator by the Console.", "[Info]") + "\n"
+                                 target_socket_op.send(notify_msg.encode("utf-8"))
+                             except Exception as e:
+                                 print(color_text(f"[Info] Could not notify {username_to_op} of OP status: {e}", "yellow"), flush=True)
+
+
+            elif cmd == "/deop":
+                 if len(parts) < 2:
+                     print(color_text("Usage: /deop <username>", "red"), flush=True)
+                 else:
+                     username_to_deop = parts[1]
+                     op_removed = False
+                     with lock: # Lock for ops modification and client lookup
+                         if username_to_deop not in ops:
+                             print(color_text(f"{username_to_deop} is not an operator.", "red"), flush=True)
+                         else:
+                             try:
+                                 ops.remove(username_to_deop) # Modify ops list under lock
+                                 op_removed = True
+                                 print(color_text(f"{username_to_deop} is no longer an operator.", "yellow"), flush=True) # Console confirmation
+                                 # Find socket for notification *while holding lock*
+                                 for sock, user in clients.items():
+                                     if user == username_to_deop:
+                                         target_socket_deop = sock
+                                         break
+                             except ValueError:
+                                 print(color_text(f"Error removing {username_to_deop} from ops list (not found during remove?).", "red"), flush=True)
+                                 op_removed = False # Ensure flag is false on error
+                     # --- Lock is released ---
+                     # Perform actions that don't need the lock *after* releasing it
+                     if op_removed:
+                         save_ops(ops) # Save the modified list
+                         if target_socket_deop: # Check if socket was found
+                             try:
+                                 notify_msg = format_for_client("Your Operator status has been removed by the Console.", "[Info]") + "\n"
+                                 target_socket_deop.send(notify_msg.encode("utf-8"))
+                             except Exception as e:
+                                 print(color_text(f"[Info] Could not notify {username_to_deop} of DEOP status: {e}", "yellow"), flush=True)
+
+
+            elif cmd == "/msg":
+                # No lock needed here, just prepares broadcast message
+                if len(command_input.split(" ", 1)) < 2: # Check if there is a message part
+                    print(color_text("Usage: /msg <message>", "red"), flush=True)
+                else:
+                    message = command_input.split(" ", 1)[1] # Get the full message
+                    broadcast_msg_console = format_for_client(message, "[Console]")
+                    print(color_text(f"{get_current_time()} [Console MSG]: {message}", "green"), flush=True) # Log to console
+                    broadcast_needed = True # Set flag to broadcast
+
+            elif cmd == "/list":
+                with lock: # Lock needed to read clients
+                    if not clients:
+                        print(color_text("No users connected.", "yellow"), flush=True)
+                    else:
+                        print(color_text(f"Connected Users ({len(clients)}):", "yellow"), flush=True)
+                        user_list = sorted(list(clients.values()))
+                        for user in user_list:
+                            print(f" - {user}", flush=True)
+                # Lock released
+
+            elif cmd == "/listops":
+                with lock: # Lock needed to read ops
+                    op_list = sorted(ops)
+                    op_str = ", ".join(op_list) if op_list else "No operators defined."
+                print(color_text(f"Current Operators: {op_str}", "yellow"), flush=True)
+                 # Lock released
+
+            elif cmd == "/stop":
+                print(color_text("Initiating server shutdown from console...", "red"), flush=True)
+                broadcast(format_for_client("Server is shutting down NOW! (Issued by Console)", "[Warning]"), None) # Notify clients
+                # Use a timer to allow broadcast to likely send before shutdown proceeds
+                threading.Timer(0.2, shutdown_server).start()
+                break # Exit console loop
+
+            elif cmd == "/restart":
+                print(color_text("Initiating server restart from console...", "red"), flush=True)
+                broadcast(format_for_client("Server is restarting NOW! (Issued by Console)", "[Warning]"), None) # Notify clients
+                threading.Timer(0.2, restart_server).start()
+                break # Exit console loop
+
+            elif cmd == "/help":
+                # --- UPDATED CONSOLE Help Text ---
+                help_output = """
+Server Console Commands:
+  /list             List connected users
+  /msg <message>    Send a message to all users as [Console]
+  /kick <user> [rsn] Kick a user
+  /op <username>    Make a user an operator
+  /deop <username>  Remove operator status
+  /listops          List current operators
+  /stop             Stop the server gracefully
+  /restart          Restart the server gracefully
+  /help             Show this help message
+"""
+                print(help_output, flush=True)
+                 # --- End Console Help Update ---
+
+            else: # Unknown command
+                print(color_text(f"Unknown console command: {cmd}. Type /help for commands.", "red"), flush=True)
+
+            # --- Perform broadcasts outside the main command logic ---
+            if kick_success and broadcast_msg_kick:
+                broadcast(broadcast_msg_kick, None)
+            if broadcast_needed and broadcast_msg_console:
+                broadcast(broadcast_msg_console, None) # Pass the formatted message
+
+
+        except EOFError: # Handle Ctrl+D
+            print(color_text("\nEOF detected, stopping server...", "red"), flush=True)
+            shutdown_server()
+            break # Exit loop
+        except KeyboardInterrupt: # Handle Ctrl+C
+            print(color_text("\nCtrl+C detected, stopping server...", "red"), flush=True)
+            shutdown_server()
+            break # Exit loop
+        except Exception as e:
+            print(color_text(f"{get_current_time()} [Console Error] An error occurred: {e}", "red"), flush=True)
+            import traceback
+            traceback.print_exc() # Print full traceback for debugging console errors
+
+    print(color_text("[Console Thread] Exited.", "blue"), flush=True)
+
+
+# --- Main Server Function ---
+def server():
+    global server_socket
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # Allow address reuse quickly after server restart
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    except OSError as e:
+        # This might fail on some systems/configurations, often not critical
+        print(color_text(f"{get_current_time()} [Warning] Could not set SO_REUSEADDR: {e} (might be normal on some systems).", "yellow"))
+
+    try:
+        server_socket.bind((HOST, PORT))
+    except OSError as e:
+        print(color_text(f"[FATAL ERROR] Could not bind to {HOST}:{PORT} - {e}", "red"))
+        print(color_text("Check if the port is already in use or if you have permissions.", "red"))
+        sys.exit(1)
+
+    server_socket.listen(5) # Listen for incoming connections (backlog of 5)
+    print(color_text(f"{get_current_time()} [Start] Server '{SERVER_NAME}' started on {HOST}:{PORT}", "green"))
+    print(color_text(f"{get_current_time()} [Start] Base file directory: {os.path.abspath(FILE_DIRECTORY)}", "green"))
+    print(color_text(f"{get_current_time()} [Start] Loaded {len(user_credentials)} user(s) and {len(ops)} operator(s).", "green"))
+
+
+    # Start the console command handler thread
+    console_thread = threading.Thread(target=console_commands, name="ConsoleThread")
+    console_thread.daemon = True # Allows main thread to exit even if console thread is blocking on input
+    console_thread.start()
+
+    accept_thread_running = True
+    while accept_thread_running:
+        try:
+            # Accept new connections - this blocks until a connection arrives
+            client_socket, addr = server_socket.accept()
+            # Start a new thread to handle the login process for this client
+            login_thread = threading.Thread(target=handle_login, args=(client_socket, addr), name=f"Login-{addr}")
+            login_thread.daemon = True # Allow main program to exit even if login threads are running (they should exit on their own)
+            login_thread.start()
+        except OSError as e:
+            # Check if the error indicates the socket was closed (e.g., during shutdown)
+            # Error numbers can vary by OS (e.g., 9 for Bad file descriptor on Linux, 10004 on Windows for interrupted call)
+            # A simple check is if server_socket is None (set during shutdown)
+            if server_socket is None:
+                print(color_text(f"{get_current_time()} [Info] Server socket closed, stopping accept loop.", "yellow"))
+            else:
+                print(color_text(f"{get_current_time()} [Error] OSError accepting connection: {e}", "red"))
+            accept_thread_running = False # Exit the loop if socket is closed or has error
+        except Exception as e:
+            print(color_text(f"{get_current_time()} [Error] Unexpected error accepting connection: {e}", "red"))
+            # Consider whether to continue or stop based on the error type
+            # For now, stop the loop on any unexpected accept error
+            accept_thread_running = False
+
+    print(color_text(f"{get_current_time()} [Info] Main accept loop terminated.", "yellow"))
+    # Ensure shutdown is called if loop exits unexpectedly
+    # shutdown_server() is designed to be safe if called multiple times
+    if server_socket is not None: # Check if shutdown was already initiated
+         shutdown_server()
 
 if __name__ == "__main__":
-    server()
+    try:
+        server()
+    except KeyboardInterrupt:
+        print(color_text("\nCtrl+C detected in main execution, initiating shutdown...", "red"))
+        # Shutdown logic is handled when the server() accept loop breaks or errors out,
+        # or by the console thread's KeyboardInterrupt handler.
+        # Calling shutdown_server() here might be redundant but should be safe.
+        if server_socket is not None:
+             shutdown_server()
+    except Exception as e:
+        print(color_text(f"\n[FATAL ERROR] Unhandled exception in main execution: {e}", "red"))
+        import traceback
+        traceback.print_exc()
+        try:
+            if server_socket is not None:
+                 shutdown_server(1) # Attempt graceful shutdown with error code
+        except:
+             os._exit(1) # Force exit if shutdown fails catastrophically
