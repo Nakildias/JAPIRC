@@ -4,6 +4,7 @@
 ### Debian and distros based on it (Tested)
 ### Fedora and distros based on it (Tested)
 ### Gentoo and distros based on it (Tested)
+# Supports windows (exe are in the releases)
 # Key features
 ### Easy installation with bash script
 ### Chat with friends.
