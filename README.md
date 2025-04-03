@@ -1,16 +1,27 @@
 # Just Another Python Internet Relay Chat
 ## Key features
-> Chat with friends
+> Chat with friends.
 #
-> Share files with friends
+> Share files with friends.
 #
-> Operator role
+> Drag & Drop file uploading. (GUI Version)
 #
-> Secured by server password
+> User registration is togglable is server settings.
 #
-> GUI & TUI Client
+> Client & Server side commands.
 #
-> More to come...
+> Operator role.
+#
+> Secured by server password.
+#
+> GUI & TUI Client.
+#
+> Arch Linux & Fedora Works. (Tested)
+#
+> Ubuntu might work. (Needs Testing)
+#
+> Gentoo requires manual tk setup for python right now see https://wiki.gentoo.org/wiki/Tkinter
+#
 
 # Installation Guide
 
@@ -71,13 +82,4 @@ If you’d like to change the default settings (port or password), you can edit 
 
 Use any text editor of your choice to modify these values sudo/root not required.
 
-#  Features 
-
-###  Username & Password: Users can log in using their own usernames and passwords to access the chat server.
-###  Server Password: Can set a password that users must enter before they can join the chat. (default = "SuperSecret")
-###  Ping sounds: When a new message comes up you will hear it thanks to the playsound library https://pypi.org/project/playsound/
-###  Server commands: /kick /msg /list /restart /stop
-
-#  TO DO
-###  Moderation role to let chosen clients moderate other clients (Currently working on that) Around 40% of the way there.
   
