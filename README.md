@@ -1,27 +1,19 @@
 # Just Another Python Internet Relay Chat
-## Key features
-> Chat with friends.
-#
-> Share files with friends.
-#
-> Drag & Drop file uploading. (GUI Version)
-#
-> User registration is togglable is server settings.
-#
-> Client & Server side commands.
-#
-> Operator role.
-#
-> Secured by server password.
-#
-> GUI & TUI Client.
-#
-> Arch Linux & Fedora Works. (Tested)
-#
-> Ubuntu might work. (Needs Testing)
-#
-> Gentoo requires manual tk setup for python right now see https://wiki.gentoo.org/wiki/Tkinter
-#
+# Supported linux distros
+### Arch Linux and distros based on it (Tested)
+### Debian and distros based on it (Tested)
+### Fedora and distros based on it (Tested)
+# Key features
+### Easy installation with bash script
+### Chat with friends.
+### Share files with friends.
+### Drag & Drop file uploading. (GUI Version)
+### User registration is togglable is server settings.
+### Client & Server side commands.
+### Operator role.
+### Secured by server password.
+### GUI & TUI Client.
+
 
 # Installation Guide
 
