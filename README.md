@@ -3,6 +3,7 @@
 ### Arch Linux and distros based on it (Tested)
 ### Debian and distros based on it (Tested)
 ### Fedora and distros based on it (Tested)
+### Gentoo and distros based on it (Tested)
 # Key features
 ### Easy installation with bash script
 ### Chat with friends.
