@@ -70,7 +70,7 @@ Inside the JAPIRC directory, run the installation script:
 
 If you’d like to change the default settings (port or password), you can edit the "JAPIRC_CLI.server.py" file located at:
 
-> ~/.python3/JAPIRC_CLI.server.py/server.py
+> ~/.local/share/JAPIRC/JAPIRC_CLI.server.py
 
 Use any text editor of your choice to modify these values sudo/root not required.
 
