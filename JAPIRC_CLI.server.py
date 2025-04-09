@@ -7,23 +7,51 @@ import time
 import os
 import sys
 from colored import fg, attr # Keep for server-side coloring
+import sqlite3
 
 # --- Server Configuration ---
 HOST = "0.0.0.0"
 PORT = 5050 # Make sure this matches the client's default
-USER_CREDENTIALS_FILE = "user_credentials.json"
+DATABASE_FILE = "server_data.db" # Stores User Credentials
 OPS_FILE = "ops.json"  # File to store operators
 SERVER_PASSWORD = "SuperSecret"  # Change this to your desired server password
 SERVER_NAME = "MyIRCServer"  # Change this to your desired server name
 FILE_DIRECTORY = "user_uploaded_files"  # Base directory for uploads
 
-# --- NEW: User Registration Control ---
+# --- User Registration Control ---
 ALLOW_USER_AUTHENTICATION = True # Set to True to allow registration, False to disable
 
 # --- Utility Functions ---
 def get_current_time():
     """Returns the current time formatted as HH:MM:SS"""
     return datetime.datetime.now().strftime("%X")
+
+# --- Database Initialization ---
+def initialize_database():
+    """Creates the SQLite database and users table if they don't exist."""
+    conn = None
+    try:
+        # Connect to the database file, creates it if it doesn't exist
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        # Create table - IF NOT EXISTS prevents errors on subsequent runs
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY NOT NULL,
+                password_hash TEXT NOT NULL
+            )
+        ''')
+        # Commit the changes (important!)
+        conn.commit()
+        print(color_text(f"{get_current_time()} [DB Info] Database '{DATABASE_FILE}' initialized/checked successfully.", "green"))
+    except sqlite3.Error as e:
+        print(color_text(f"{get_current_time()} [FATAL DB ERROR] Could not initialize database: {e}", "red"))
+        sys.exit(1) # Cannot run without the database
+    finally:
+        # Ensure the connection is closed even if errors occur
+        if conn:
+            conn.close()
+
 
 def color_text(text, color):
     """Applies color codes for server console output. Handles potential invalid colors."""
@@ -189,7 +217,7 @@ def handle_list_files(client_socket, target_username, requestor_username):
         client_socket.send(error_msg.encode("utf-8"))
         print(color_text(f"{get_current_time()} [Files Error] Failed listing for {target_username} (requested by {requestor_username}): {str(e)}", "red"))
 
-# --- NEW: File Deletion Handling ---
+# --- File Deletion Handling ---
 def handle_delete_file(client_socket, username, command_parts):
     """Handles a request to delete a file."""
     global ops # Access global ops list
@@ -264,27 +292,6 @@ def handle_delete_file(client_socket, username, command_parts):
         client_socket.send(format_for_client(f"Error deleting file '{filename}'. Check server logs.", "[Error]").encode("utf-8"))
         print(color_text(f"{get_current_time()} {print_prefix} Failed deleting {target_user}/{filename} for {username}: {str(e)}", "red"))
 
-# --- Credentials and Ops Management ---
-def load_credentials():
-    try:
-        with open(USER_CREDENTIALS_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        print(color_text(f"{get_current_time()} [Info] Credentials file not found or invalid, starting fresh.", "yellow"))
-        return {}
-
-def save_credentials(credentials):
-    try:
-        with lock: # Ensure thread safety when writing
-            # Make a copy to avoid modifying the dictionary while iterating/dumping if needed elsewhere
-            credentials_copy = credentials.copy()
-            with open(USER_CREDENTIALS_FILE, "w") as f:
-                json.dump(credentials_copy, f, indent=4)
-    except IOError as e:
-        print(color_text(f"{get_current_time()} [Error] Could not save credentials file: {e}", "red"))
-    except Exception as e:
-         print(color_text(f"{get_current_time()} [Error] Unexpected error saving credentials: {e}", "red"))
-
 
 def load_ops():
     try:
@@ -311,7 +318,7 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 # --- Global Variables ---
-user_credentials = load_credentials()
+initialize_database()
 ops = load_ops()
 clients = {} # {client_socket: username}
 lock = threading.RLock() # RE-ENTRANT Lock for synchronizing access to shared resources
@@ -374,7 +381,7 @@ def handle_client(client_socket, username):
                         target_user = parts[1]
                         handle_list_files(client_socket, target_user, username)
 
-                # --- NEW: Delete Command ---
+                # --- Delete Command ---
                 elif command == "/delete":
                      # Need to handle potential spaces in filename if used with target user
                      # Split into parts: /delete [target_user] filename
@@ -496,7 +503,7 @@ Operator Commands (require OP status):
 
 def handle_server_command(client_socket, issuer_username, message):
     """Handles commands that require operator privileges."""
-    global ops, user_credentials # Ensure access to globals
+    global ops # Ensure access to globals
     parts = message.split(" ", 2) # Split potentially including reason/filename
     command = parts[0].lower()
     kick_success = False # Flag specific to kick command
@@ -557,7 +564,7 @@ def handle_server_command(client_socket, issuer_username, message):
                 kick_success = False
             # --- END KICK LOGIC ---
 
-        # --- NEW: OP LOGIC ---
+        # --- OP LOGIC ---
         elif command == "/op":
             if len(parts) != 2:
                 op_change_msg = format_for_client("Usage: /op <username>", "[Usage]")
@@ -565,26 +572,27 @@ def handle_server_command(client_socket, issuer_username, message):
                 target_user = parts[1]
                 if target_user == issuer_username:
                     op_change_msg = format_for_client("You cannot op yourself.", "[Error]")
-                elif target_user not in user_credentials:
-                    op_change_msg = format_for_client(f"User '{target_user}' does not exist (must be registered).", "[Error]")
-                elif target_user in ops:
-                    op_change_msg = format_for_client(f"User '{target_user}' is already an operator.", "[Info]")
                 else:
-                    ops.append(target_user)
-                    # save_ops(ops) # Save the updated list - MOVED outside lock
-                    op_needs_save = True # Mark for saving
-                    op_changed = True
-                    op_change_msg = format_for_client(f"User '{target_user}' is now an operator.", "[Info]")
-                    log_msg = f"[OP] {issuer_username} opped {target_user}."
-                    notify_target_msg = format_for_client(f"You have been promoted to Operator by {issuer_username}.", "[Info]")
-                    # Find the target socket to notify (if online)
-                    for sock, user in clients.items():
-                        if user == target_user:
-                            notify_target_sock = sock
-                            break
+                    # --- Check if target_user is registered in the DB ---
+                    user_is_registered = False
+                    db_conn_op_check = None
+                    try:
+                        db_conn_op_check = sqlite3.connect(DATABASE_FILE)
+                        cursor_op_check = db_conn_op_check.cursor()
+                        cursor_op_check.execute("SELECT 1 FROM users WHERE username = ?", (target_user,))
+                        user_is_registered = cursor_op_check.fetchone() is not None
+                    except sqlite3.Error as e:
+                        print(color_text(f"{get_current_time()} [OP DB Error] Error checking user registration for {target_user}: {e}", "red"))
+                        op_change_msg = format_for_client(f"Server database error checking user '{target_user}'.", "[Error]")
+                        # The actual sending of op_change_msg happens outside the lock
+                    finally:
+                        if db_conn_op_check:
+                            db_conn_op_check.close()
+                    # --- End DB Check ---
+
         # --- END OP LOGIC ---
 
-        # --- NEW: DEOP LOGIC ---
+        # --- DEOP LOGIC ---
         elif command == "/deop":
             if len(parts) != 2:
                 op_change_msg = format_for_client("Usage: /deop <username>", "[Usage]")
@@ -720,28 +728,33 @@ def broadcast(message, sender_socket):
                     except: pass
 
 
-# --- MODIFIED handle_login FUNCTION ---
+# --- Handle Login Function ---
 def handle_login(client_socket, addr):
-    """Handles the initial connection, authentication, and registration process."""
-    global user_credentials, ops, clients, ALLOW_USER_AUTHENTICATION # Access globals
+    """Handles the initial connection, authentication, and registration process using SQLite."""
+    global ops, clients, ALLOW_USER_AUTHENTICATION
 
     username = None
     login_successful = False
+    db_conn = None # Initialize connection variable for finally block
+
     print(color_text(f"{get_current_time()} [Auth] Connection attempt from {addr}", "blue"))
     try:
+        # --- Server Password Check ---
         client_socket.send(b"Enter server password: ")
         client_socket.settimeout(30) # 30 second timeout for server password
         server_password_attempt = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
+        client_socket.settimeout(None) # Reset timeout immediately after receive
 
         if server_password_attempt != SERVER_PASSWORD:
             client_socket.send("Incorrect server password.\n".encode("utf-8"))
             print(color_text(f"{get_current_time()} [Auth] Failed server password attempt from {addr}", "yellow"))
-            client_socket.settimeout(None)
-            return
+            return # Exit handle_login
 
+        # --- Username Input and Validation ---
         client_socket.send("Server password OK. Enter username: ".encode("utf-8"))
         client_socket.settimeout(60) # Allow more time for username/password/registration
         username = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
+        # Timeout will be reset after next receive or explicitly on error/return
 
         is_valid_username = (username and 1 <= len(username) <= 18 and
                              " " not in username and
@@ -750,42 +763,60 @@ def handle_login(client_socket, addr):
         if not is_valid_username:
             client_socket.send("Username invalid (1-18 chars, alphanumeric, _, -).\n".encode("utf-8"))
             print(color_text(f"{get_current_time()} [Auth] Invalid username attempt from {addr}: '{username}'", "yellow"))
-            client_socket.settimeout(None)
-            return
+            client_socket.settimeout(None) # Ensure timeout reset on early exit
+            return # Exit handle_login
 
-        # Check if user exists or is already logged in within the lock
+        # --- Check if User is Already Logged In (Unchanged, uses 'clients' dict) ---
         with lock:
             if username in clients.values():
                 client_socket.send("Username already logged in.\n".encode("utf-8"))
                 print(color_text(f"{get_current_time()} [Auth] Duplicate login attempt from {addr} for user: '{username}'", "yellow"))
-                client_socket.settimeout(None)
-                return
-            user_exists = username in user_credentials
+                client_socket.settimeout(None) # Ensure timeout reset on early exit
+                return # Exit handle_login
+
+        # --- Check if User Exists in Database ---
+        user_exists_in_db = False
+        stored_password_hash = None
+        try:
+            db_conn = sqlite3.connect(DATABASE_FILE)
+            cursor = db_conn.cursor()
+            cursor.execute("SELECT password_hash FROM users WHERE username = ?", (username,))
+            result = cursor.fetchone() # Returns a tuple (hash,) or None
+            if result:
+                user_exists_in_db = True
+                stored_password_hash = result[0]
+            # No commit needed for SELECT
+        except sqlite3.Error as e:
+            print(color_text(f"{get_current_time()} [Auth DB Error] Error checking user existence for '{username}': {e}", "red"))
+            client_socket.send("Server database error during login.\n".encode("utf-8"))
+            client_socket.settimeout(None)
+            return # Exit handle_login
+        finally:
+            if db_conn:
+                db_conn.close() # Close connection after check
+                db_conn = None # Reset for potential next DB operation
 
         # --- Handle Existing User or Registration ---
-        if user_exists:
-            # --- Existing User Logic ---
+        if user_exists_in_db:
+            # --- Existing User Login Logic ---
             print(color_text(f"{get_current_time()} [Auth] User '{username}' exists, prompting for password.", "blue"))
             client_socket.send("Username OK. Enter password: ".encode("utf-8"))
             # Timeout still 60 seconds from username prompt
             password = client_socket.recv(1024).decode("utf-8", errors="ignore").strip()
             client_socket.settimeout(None) # Reset timeout after receiving password
 
-            hashed_password = hash_password(password)
+            hashed_password_attempt = hash_password(password)
 
-            with lock:
-                correct_password = user_credentials.get(username) == hashed_password
-
-            if not correct_password:
+            # Compare attempt with the hash retrieved from the DB earlier
+            if stored_password_hash == hashed_password_attempt:
+                print(color_text(f"{get_current_time()} [Auth] Password correct for {username}.", "green"))
+                login_successful = True
+                client_socket.send("Login successful.\n".encode("utf-8"))
+                # Proceed to post-login actions below
+            else:
                 client_socket.send("Incorrect password.\n".encode("utf-8"))
                 print(color_text(f"{get_current_time()} [Auth] Failed password for user {username} from {addr}", "yellow"))
                 return # Exit handle_login
-
-            # Password correct for existing user
-            print(color_text(f"{get_current_time()} [Auth] Password correct for {username}.", "green"))
-            login_successful = True
-            client_socket.send("Login successful.\n".encode("utf-8"))
-            # Proceed to post-login actions below
 
         else:
             # --- New User / Registration Logic ---
@@ -793,7 +824,7 @@ def handle_login(client_socket, addr):
             if not ALLOW_USER_AUTHENTICATION:
                 client_socket.send("User registration is not enabled on this server.\n".encode("utf-8"))
                 print(color_text(f"{get_current_time()} [Auth] Registration disabled, rejected new user '{username}' from {addr}", "yellow"))
-                client_socket.settimeout(None)
+                client_socket.settimeout(None) # Ensure timeout reset
                 return # Exit handle_login
 
             # Registration is allowed, proceed
@@ -810,17 +841,33 @@ def handle_login(client_socket, addr):
                 new_password = password_parts[0]
                 hashed_new_password = hash_password(new_password)
 
-                with lock:
-                    user_credentials[username] = hashed_new_password
-                    # Save credentials immediately after successful registration
-                    # save_credentials(user_credentials) # Moved save outside lock
+                # --- Insert New User into Database ---
+                registration_ok = False
+                try:
+                    db_conn = sqlite3.connect(DATABASE_FILE)
+                    cursor = db_conn.cursor()
+                    # Insert the new user record
+                    cursor.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)",
+                                   (username, hashed_new_password))
+                    db_conn.commit() # Commit the insertion
+                    registration_ok = True
+                except sqlite3.IntegrityError: # Catch if username somehow got created between check and insert (rare)
+                    print(color_text(f"{get_current_time()} [Auth DB Error] IntegrityError: Username '{username}' likely created concurrently.", "red"))
+                    client_socket.send("Registration failed (username conflict).\n".encode("utf-8"))
+                    return # Exit handle_login
+                except sqlite3.Error as e:
+                    print(color_text(f"{get_current_time()} [Auth DB Error] Error registering user '{username}': {e}", "red"))
+                    client_socket.send("Server database error during registration.\n".encode("utf-8"))
+                    return # Exit handle_login
+                finally:
+                    if db_conn:
+                        db_conn.close() # Close connection after registration attempt
+                        db_conn = None
 
-                save_credentials(user_credentials) # Save the updated credentials
-
-                print(color_text(f"{get_current_time()} [Auth] User '{username}' registered successfully from {addr}.", "green"))
-                login_successful = True
-                client_socket.send("Registration successful.\n".encode("utf-8")) # Send registration success first
-                # Proceed to post-login actions below
+                if registration_ok:
+                    print(color_text(f"{get_current_time()} [Auth] User '{username}' registered successfully from {addr}.", "green"))
+                    login_successful = True
+                    client_socket.send("Registration successful.\n".encode("utf-8")) # Send registration success first
 
             else:
                 # Invalid registration format or mismatch
@@ -838,7 +885,7 @@ def handle_login(client_socket, addr):
             client_socket.send(welcome_msg.encode("utf-8"))
 
             with lock:
-                is_op = username in ops
+                is_op = username in ops # Check ops list (still in memory/JSON)
             if is_op:
                 client_socket.send(format_for_client("You are logged in as an Operator.", "[Info]").encode("utf-8") + b"\n")
 
@@ -849,7 +896,10 @@ def handle_login(client_socket, addr):
             client_thread = threading.Thread(target=handle_client, args=(client_socket, username), name=f"Client-{username}")
             client_thread.daemon = True
             client_thread.start()
+            # Return successfully, letting the new thread handle the client
+            return # Important: prevent finally block from closing the socket handled by the new thread
 
+    # --- Error Handling ---
     except socket.timeout:
         print(color_text(f"{get_current_time()} [Auth] Login/Registration timeout from {addr}", "yellow"))
         try: client_socket.send("Timeout during login/registration. Connection closed.\n".encode("utf-8"))
@@ -859,22 +909,25 @@ def handle_login(client_socket, addr):
     except Exception as e:
         print(color_text(f"{get_current_time()} [Auth Error] Error during login/registration from {addr}: {e}", "red"))
         import traceback
-        traceback.print_exc() # Print stack trace for debugging auth errors
+        traceback.print_exc()
         try: client_socket.send("An error occurred during login/registration. Connection closed.\n".encode("utf-8"))
         except: pass
     finally:
-        # Ensure timeout is reset if it was set
+        # Ensure timeout is reset if it was set and we exited early
         try: client_socket.settimeout(None)
         except: pass
-
-        # Crucially, ensure the socket is closed if login/registration failed *before* the handler thread was started
+        # Close the database connection if it's still open due to an error before closing
+        if db_conn:
+            try: db_conn.close()
+            except: pass
+        # Crucially, ensure the socket is closed *only if login/registration failed* before the handler thread was started
         if not login_successful:
             try:
                 print(color_text(f"{get_current_time()} [Auth Cleanup] Closing socket for failed login/registration from {addr}.", "blue"))
                 client_socket.close()
             except: pass # Ignore errors closing already potentially closed socket
 
-# --- Shutdown/Restart/Console (Mostly Unchanged) ---
+# --- Shutdown/Restart/Console ---
 
 def shutdown_server(exit_code=0):
     """Gracefully shuts down the server."""
@@ -912,7 +965,6 @@ def shutdown_server(exit_code=0):
 
     # Save state AFTER closing sockets
     print(color_text(f"{get_current_time()} [Shutdown] Saving state...", "yellow"))
-    save_credentials(user_credentials) # Uses its own lock
     save_ops(ops) # Uses its own lock
 
     print(color_text(f"{get_current_time()} [Shutdown] Exiting.", "red"))
@@ -951,7 +1003,6 @@ def restart_server():
             print(color_text(f"{get_current_time()} [Restart Error] Error closing server socket: {e}", "red"))
 
     print(color_text(f"{get_current_time()} [Restart] Saving state...", "yellow"))
-    save_credentials(user_credentials)
     save_ops(ops)
 
     print(color_text(f"{get_current_time()} [Restart] Executing restart...", "red"))
@@ -965,7 +1016,7 @@ def restart_server():
 # --- Console Command Handling ---
 def console_commands():
     """Handles commands entered directly into the server console."""
-    global ops, user_credentials
+    global ops
     # Ensure initial messages are seen
     print(color_text("Server console ready. Type /help for commands.", "magenta"), flush=True)
     time.sleep(0.1) # Short delay helps ensure message appears after startup logs
@@ -1036,23 +1087,39 @@ def console_commands():
                     print(color_text("Usage: /op <username>", "red"), flush=True)
                 else:
                     username_to_op = parts[1]
-                    with lock: # Lock needed for ops list, user_credentials read, and clients lookup
-                        if username_to_op not in user_credentials:
-                            print(color_text(f"User '{username_to_op}' does not exist (must be registered).", "red"), flush=True)
+                    # --- Check DB for registration ---
+                    user_is_registered_console = False
+                    db_conn_console_check = None
+                    try:
+                        db_conn_console_check = sqlite3.connect(DATABASE_FILE)
+                        cursor_console_check = db_conn_console_check.cursor()
+                        cursor_console_check.execute("SELECT 1 FROM users WHERE username = ?", (username_to_op,))
+                        user_is_registered_console = cursor_console_check.fetchone() is not None
+                    except sqlite3.Error as e:
+                        print(color_text(f"[Console DB Error] Error checking user registration for {username_to_op}: {e}", "red"), flush=True)
+                        user_is_registered_console = False # Assume failure if DB error
+                    finally:
+                        if db_conn_console_check:
+                            db_conn_console_check.close()
+                    # --- End DB Check ---
+
+                    # Proceed with lock for ops/clients access
+                    with lock:
+                        if not user_is_registered_console:
+                             print(color_text(f"User '{username_to_op}' does not exist (must be registered).", "red"), flush=True)
                         elif username_to_op in ops:
-                            print(color_text(f"{username_to_op} is already an operator.", "yellow"), flush=True)
+                             print(color_text(f"{username_to_op} is already an operator.", "yellow"), flush=True)
                         else:
                             ops.append(username_to_op)
-                            # Save is done outside lock after checks
-                            print(color_text(f"{username_to_op} is now an operator.", "green"), flush=True) # Console confirmation
+                            print(color_text(f"{username_to_op} is now an operator.", "green"), flush=True)
                             # Find socket for notification *while holding lock*
                             for sock, user in clients.items():
                                 if user == username_to_op:
                                     target_socket_op = sock
                                     break
-                            # Mark for saving outside lock
-                            op_needs_save = True
+                            op_needs_save = True # Mark for saving outside lock
                     # Lock released
+
                     # Actions outside lock
                     if op_needs_save:
                         save_ops(ops) # Save the modified list
@@ -1206,7 +1273,7 @@ def server():
     print(color_text(f"{get_current_time()} [Start] Server '{SERVER_NAME}' started on {HOST}:{PORT}", "green"))
     print(color_text(f"{get_current_time()} [Start] Base file directory: {os.path.abspath(FILE_DIRECTORY)}", "green"))
     print(color_text(f"{get_current_time()} [Start] User registration enabled: {ALLOW_USER_AUTHENTICATION}", "green")) # Log registration status
-    print(color_text(f"{get_current_time()} [Start] Loaded {len(user_credentials)} user(s) and {len(ops)} operator(s).", "green"))
+    print(color_text(f"{get_current_time()} [Start] Using database '{DATABASE_FILE}' for users. Loaded {len(ops)} operator(s).", "green"))
 
 
     # Start the console command handler thread
